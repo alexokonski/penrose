@@ -3,6 +3,7 @@ use bevy_prototype_lyon::prelude::*;
 use bevy::math::Vec2;
 use bevy::prelude::Commands;
 use bevy_prototype_lyon::entity::{ShapeBundle, ShapeColors};
+use rand::prelude::*;
 
 fn main() {
     App::build()
@@ -88,30 +89,41 @@ impl Rhombus {
 }
 
 fn setup(mut commands: Commands) {
-    let skinny = Rhombus::new_skinny();
-    let fat = Rhombus::new_fat();
-    let mut fat_transform = Transform::from_xyz(-150.0, 0.0, 0.0);
-    fat_transform.rotate(Quat::from_rotation_z(f32::to_radians(90.0)));
+
+    let mut rng = rand::thread_rng();
+    /*let mut fat_transform = Transform::from_xyz(-150.0, 0.0, 0.0);
+    fat_transform.rotate(Quat::from_rotation_z(f32::to_radians(90.0)));*/
+
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
-    commands.spawn_bundle(
-        skinny.get_bundle()
-    ).insert(skinny);
-    commands.spawn_bundle(
-        fat.get_bundle_with_transform(fat_transform)
-    ).insert(fat);
+    for _ in 1..100 {
+        let skinny = Rhombus::new_skinny();
+        let fat = Rhombus::new_fat();
+        let rand_x1: f32 = rng.gen::<f32>() * 1000.0 - 500.0;
+        let rand_y1: f32 = rng.gen::<f32>() * 500.0 - 250.0;
+        let rand_x2: f32 = rng.gen::<f32>() * 1000.0 - 500.0;
+        let rand_y2: f32 = rng.gen::<f32>() * 500.0 - 250.0;
+        commands.spawn_bundle(
+            skinny.get_bundle_with_transform(Transform::from_xyz(rand_x1, rand_y1, 0.0))
+        ).insert(skinny);
+        commands.spawn_bundle(
+            fat.get_bundle_with_transform(Transform::from_xyz(rand_x2, rand_y2, 0.0))
+        ).insert(fat);
+    }
+
 }
 
 fn shapes(mut query: Query<(&Rhombus, &mut Transform)>, mut commands: Commands) {
+    let mut rng = rand::thread_rng();
     for (rhomb, mut transform) in query.iter_mut() {
         //if rhomb.color == Color::RED {
         //    continue;
         //}
         let (a, cur_angle) = transform.rotation.to_axis_angle();
-        let mut new_angle = cur_angle + f32::to_radians(1.0);
+        let mut new_angle = cur_angle + f32::to_radians(2.0 * rng.gen::<f32>());
         if new_angle.to_degrees() >= 360.0 {
             new_angle = 0.0;
         }
         transform.rotation = Quat::from_rotation_z(new_angle);
-        println!("translation {}, new_angle: {}, cur_angle {}, about {}", transform.rotation, new_angle.to_degrees(), cur_angle.to_degrees(), a)
+        //println!("translation {}, new_angle: {}, cur_angle {}, about {}", transform.rotation, new_angle.to_degrees(), cur_angle.to_degrees(), a)
     }
 }
