@@ -1,0 +1,32 @@
+https://preshing.com/20110831/penrose-tiling-explained/
+http://www.math.ubc.ca/~cass/courses/m308-02b/projects/schweber/penrose.html
+http://www.quadibloc.com/math/pen06.htm
+https://physics.princeton.edu//~steinh/growthQC.pdf
+https://en.wikipedia.org/wiki/Penrose_tiling
+
+Thanks Jeff! This page was really helpful.
+
+Here's a modified version that output the darts and kites tiling instead:
+
+def subdivide(triangles):
+result = []
+for color, A, B, C in triangles:
+if color == 0:
+# Subdivide red (sharp isosceles) (half kite) triangle
+Q = A + (B - A) / goldenRatio
+R = B + (C - B) / goldenRatio
+result += [(1, R, Q, B), (0, Q, A, R), (0, C, A, R)]
+else:
+# Subdivide blue (fat isosceles) (half dart) triangle
+P = C + (A - C) / goldenRatio
+result += [(1, B, P, A), (0, P, C, B)]
+return result
+
+# Create wheel of red triangles around the origin
+triangles = []
+for i in xrange(10):
+B = cmath.rect(1, (2*i - 1) * math.pi / 10)
+C = cmath.rect(1, (2*i + 1) * math.pi / 10)
+if i % 2 == 0:
+B, C = C, B # Make sure to mirror every second triangle
+triangles.append((0, B, 0j, C))
