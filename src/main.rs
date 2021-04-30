@@ -3,16 +3,15 @@ use bevy_prototype_lyon::prelude::*;
 use bevy::math::Vec2;
 use bevy::prelude::Commands;
 use bevy_prototype_lyon::entity::{ShapeBundle, ShapeColors};
-use rand::prelude::*;
 
 #[macro_use]
 extern crate lazy_static;
 
 type PointList = Vec<Vec2>;
-type Radians = f32;
 type SideFlags = u8;
 
 trait Tile {
+    type TileType;
     fn get_bundle_with_transform(&self, transform: Transform) -> ShapeBundle;
     fn get_bundle(&self) -> ShapeBundle {
         self.get_bundle_with_transform(Transform::default())
@@ -20,9 +19,11 @@ trait Tile {
     fn has_free_sides(&self) -> bool;
     fn get_free_sides(&self) -> SideFlags;
     fn set_side_used(&mut self, side: usize);
-    fn get_side_used(&self, size: usize) -> bool;
+    fn get_side_used(&self, side: usize) -> bool;
     fn get_points(&self) -> PointList;
-    //fn get_connection_transform(&self, other_angle: f32, side: usize) -> Option<Transform>;
+    fn get_type(&self) -> Self::TileType;
+    fn get_matching_side(&self, side: usize, other_type: Self::TileType) -> usize;
+    fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform;
 }
 
 #[derive(Clone, Copy)]
@@ -50,6 +51,38 @@ fn make_rotation_transform(angle: f32, translation: Vec2) -> Transform {
     )
 }
 
+fn make_rotation_transform_good(angle: f32, translation: Vec2, distance_to_center_from_translation: f32) -> Transform {
+    /*
+    // Create a vector that will point to the center of the figure we are translating
+    let dir = Vec3::X;
+    let rotation = Quat::from_rotation_z(angle);
+    let vec_to_center_point = rotation * dir * distance_to_center_from_translation;
+    
+    // Now translate that point to its final position
+    let center_point = vec_to_center_point + Vec3::from((translation, 0.0));
+
+    Transform::from_matrix(
+        Mat4::from_rotation_translation(
+            rotation,
+            center_point
+        )
+    )
+    */
+
+    let centerpoint = Vec3::new(0.0, distance_to_center_from_translation, 0.0);
+    let rotation = Quat::from_rotation_z(angle);
+    let centerpoint_rotated = rotation * centerpoint;
+    let vec3_translation = Vec3::from((translation, 0.0));
+    let centerpoint_translated_rotated = centerpoint_rotated + vec3_translation;
+
+    Transform::from_matrix(
+        Mat4::from_rotation_translation(
+            rotation,
+            centerpoint_translated_rotated
+        )
+    )
+}
+
 lazy_static! {
     static ref ROTATION_TRANSFORMS: Vec<Vec<Vec<Transform>>> = {
         // Create a rhombus centered at the origin
@@ -64,7 +97,7 @@ lazy_static! {
         let fat_half_small_diag = fat_small_diag_len / 2.0;
 
         let skinny_long_diag_len = r_skinny.leg_len * (2.0 + 2.0 * r_skinny.small_angle.cos()).sqrt();
-        let skinny_half_long_diag = skinny_long_diag_len / 2.0;
+        //let skinny_half_long_diag = skinny_long_diag_len / 2.0;
         let skinny_small_diag_len = r_skinny.leg_len * (2.0 - 2.0 * r_skinny.small_angle.cos()).sqrt();
         let skinny_half_small_diag = skinny_small_diag_len / 2.0;
 
@@ -75,108 +108,137 @@ lazy_static! {
             {
                 fat.push(Vec::<Transform>::new());
                 {
-                    let fat_fat_angle = f32::to_radians(180.0) - Rhombus::FAT_SMALL_ANGLE / 2.0 - Rhombus::FAT_LARGE_ANGLE / 2.0;
+                    let fat_fat_angle = f32::to_radians(180.0) + (f32::to_radians(180.0) - Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::FAT_LARGE_ANGLE / 2.0);
                     let half_small_y_translate = Vec2::new(0.0, fat_half_small_diag);
                     let fat_fat_sides = &mut fat[0];
                     {
-                        // Fat -> Fat on side 0
+                        // Fat on Fat on side 0
                         fat_fat_sides.push(
-                            make_rotation_transform(fat_fat_angle, fat_points[Rhombus::TOP_POINT] + half_small_y_translate)
+                            make_rotation_transform(fat_fat_angle, fat_points[r_fat.get_top_index()] + half_small_y_translate)
                         );
                     }
                     {
-                        // Fat -> Fat on side 1
+                        // Fat on Fat on side 1
                         fat_fat_sides.push(
-                            make_rotation_transform(-fat_fat_angle, fat_points[Rhombus::TOP_POINT] + half_small_y_translate)
+                            make_rotation_transform(-fat_fat_angle, fat_points[r_fat.get_top_index()] + half_small_y_translate)
                         );
                     }
                     {
-                        // Fat -> Fat on side 2
+                        // Fat on Fat on side 2
                         fat_fat_sides.push(
-                            make_rotation_transform(fat_fat_angle, fat_points[Rhombus::BOTTOM_POINT] - half_small_y_translate)
+                            make_rotation_transform(fat_fat_angle, fat_points[r_fat.get_bottom_index()] - half_small_y_translate)
                         );
                     }
                     {
-                        // Fat -> Fat on side 3
+                        // Fat on Fat on side 3
                         fat_fat_sides.push(
-                            make_rotation_transform(-fat_fat_angle, fat_points[Rhombus::BOTTOM_POINT] - half_small_y_translate)
+                            make_rotation_transform(-fat_fat_angle, fat_points[r_fat.get_bottom_index()] - half_small_y_translate)
                         );
                     }
                 }
                 fat.push(Vec::<Transform>::new());
                 {
-                    let fat_skinny_angle = f32::to_radians(180.0) + Rhombus::FAT_SMALL_ANGLE;
+                    let skinny_fat_horizontal_angle = f32::to_radians(180.0 + Rhombus::FAT_SMALL_ANGLE / 2.0 - Rhombus::SKINNY_SMALL_ANGLE / 2.0);
+                    let skinny_fat_vert_angle = f32::to_radians(180.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0 - Rhombus::FAT_LARGE_ANGLE / 2.0);
+                    println!("skinny_fat_horizontal_angle {}", f32::to_degrees(skinny_fat_horizontal_angle));
+                    //let half_small_large_x_translate = Vec2::new(fat_half_long_diag, 0.0);
+                    //let half_small_y_translate = Vec2::new(0.0, skinny_half_small_diag);
+                    let skinny_fat_sides = &mut fat[1];
+                    {
+                        // Skinny onto fat on side 0
+                        skinny_fat_sides.push(
+                            make_rotation_transform_good(skinny_fat_horizontal_angle, fat_points[r_fat.get_left_index()], -skinny_half_small_diag)
+                        );
+                    }
+                    {
+                        // Skinny onto fat on side 1
+                        skinny_fat_sides.push(
+                            make_rotation_transform_good(-skinny_fat_vert_angle, fat_points[r_fat.get_top_index()], skinny_half_small_diag)
+                        );
+                    }
+                    {
+                        // Skinny onto fat on side 2
+                        skinny_fat_sides.push(
+                            make_rotation_transform_good(skinny_fat_vert_angle + f32::to_radians(180.0), fat_points[r_fat.get_bottom_index()], skinny_half_small_diag)
+                        );
+                    }
+                    {
+                        // Skinny onto fat on side 3
+                        skinny_fat_sides.push(
+                            make_rotation_transform_good(-f32::to_radians(Rhombus::SKINNY_SMALL_ANGLE / 2.0), fat_points[r_fat.get_left_index()], -skinny_half_small_diag)
+                        );
+                    }
+                }
+            }
+        }
+
+        v.push(Vec::<Vec::<Transform>>::new());
+        {
+            let skinny = &mut v[1];
+            {
+                skinny.push(Vec::<Transform>::new());
+                {
+                    let fat_skinny_angle = f32::to_radians(180.0 - Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0);
+                    let half_small_y_translate = Vec2::new(0.0, fat_half_small_diag);
+                    let skinny_fat_sides = &mut skinny[0];
+                    {
+                        // Fat on Skinny on side 0
+                        skinny_fat_sides.push(
+                            make_rotation_transform(fat_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
+                        );
+                    }
+                    {
+                        // Fat on Skinny on side 1
+                        skinny_fat_sides.push(
+                            make_rotation_transform(-fat_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
+                        );
+                    }
+                    {
+                        // Fat on Skinny on side 2
+                        skinny_fat_sides.push(
+                            make_rotation_transform(fat_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
+                        );
+                    }
+                    {
+                        // Fat on Skinny on side 3
+                        skinny_fat_sides.push(
+                            make_rotation_transform(-fat_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
+                        );
+                    }
+                }
+                skinny.push(Vec::<Transform>::new());
+                {
+                    let skinny_skinny_angle = f32::to_radians(180.0 + 180.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0);
                     let half_small_y_translate = Vec2::new(0.0, skinny_half_small_diag);
-                    let fat_skinny_sides = &mut fat[1];
+                    let skinny_skinny_sides = &mut skinny[0];
                     {
-                        // Fat -> Skinny on side 0
-                        fat_skinny_sides.push(
-                            make_rotation_transform(fat_skinny_angle, fat_points[Rhombus::LEFT_POINT] + half_small_y_translate)
+                        // Skinny -> Skinny on side 0
+                        skinny_skinny_sides.push(
+                            make_rotation_transform(skinny_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
                         );
                     }
                     {
-                        // Fat -> Skinny on side 1
-                        fat_skinny_sides.push(
-                            make_rotation_transform(-fat_skinny_angle, fat_points[Rhombus::TOP_POINT] + half_small_y_translate)
+                        // Skinny -> Skinny on side 1
+                        skinny_skinny_sides.push(
+                            make_rotation_transform(-skinny_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
                         );
                     }
                     {
-                        // Fat -> Skinny on side 2
-                        fat_skinny_sides.push(
-                            make_rotation_transform(fat_skinny_angle, fat_points[Rhombus::BOTTOM_POINT] - half_small_y_translate)
+                        // Skinny -> Skinny on side 2
+                        skinny_skinny_sides.push(
+                            make_rotation_transform(skinny_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
                         );
                     }
                     {
-                        // Fat -> Skinny on side 3
-                        fat_skinny_sides.push(
-                            make_rotation_transform(-fat_skinny_angle, fat_points[Rhombus::LEFT_POINT] - half_small_y_translate)
+                        // Skinny -> Skinny on side 3
+                        skinny_skinny_sides.push(
+                            make_rotation_transform(-skinny_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
                         );
                     }
                 }
             }
         }
         v
-/*
-                // Fat
-                [
-                    // Fat
-                    [
-                        // Fat -> Fat UPPER_LEFT_SIDE
-                        Transform::from_matrix(Mat4::from_rotation_translation( Quat, translation: Vec3) -> Mat4
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity()
-                    ],
-        
-                    // Skinny
-                    [
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity()
-                    ]
-                ],
-        
-                // Skinny
-                [
-                    // Fat
-                    [
-                        // Skinny -> Fat UPPER_LEFT_SIDE
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity()
-                    ],
-        
-                    // Skinny
-                    [
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity(),
-                        Transform::identity()
-                    ]
-                ]
-            ];*/
     };
 }
 
@@ -186,15 +248,33 @@ impl Rhombus {
     const SKINNY_SMALL_ANGLE: f32 = 36.0;
     const FAT_LARGE_ANGLE: f32 = 180.0 - Rhombus::FAT_SMALL_ANGLE;
     const SKINNY_LARGE_ANGLE: f32 = 180.0 - Rhombus::SKINNY_SMALL_ANGLE;
-    const LEFT_POINT: usize = 0;
-    const TOP_POINT: usize = 1;
-    const RIGHT_POINT: usize = 2;
-    const BOTTOM_POINT: usize = 3;
+    //const LEFT_POINT: usize = 0;
+    //const TOP_POINT: usize = 1;
+    //const RIGHT_POINT: usize = 2;
+    //const BOTTOM_POINT: usize = 3;
 
     const UPPER_LEFT_SIDE: usize = 0;
     const UPPER_RIGHT_SIDE: usize = 1;
     const LOWER_RIGHT_SIDE: usize = 2;
     const LOWER_LEFT_SIDE: usize = 3;
+
+    const PENROSE_POINT_INDICES: [[usize; 4]; 2] = [
+        [0, 1+3, 2+7, 3+11],
+        [0, 1+3, 2+6, 3+10]
+    ];
+
+    fn get_left_index(&self) -> usize {
+        Rhombus::PENROSE_POINT_INDICES[self.penrose_type as usize][0]
+    }
+    fn get_top_index(&self) -> usize {
+        Rhombus::PENROSE_POINT_INDICES[self.penrose_type as usize][1]
+    }
+    fn get_right_index(&self) -> usize {
+        Rhombus::PENROSE_POINT_INDICES[self.penrose_type as usize][2]
+    }
+    fn get_bottom_index(&self) -> usize {
+        Rhombus::PENROSE_POINT_INDICES[self.penrose_type as usize][3]
+    }
 
     const PENROSE_MATCHING_RULES: [[[usize; 4]; 2]; 2] = [
         [
@@ -212,48 +292,6 @@ impl Rhombus {
             [1, 0, 3, 2]
         ]
     ];
-
-    /*const CONNECT_INFO: [[[Transform; 4]; 2]; 2] = [
-        // Fat
-        [
-            // Fat
-            [
-                // Fat -> Fat UPPER_LEFT_SIDE
-                Transform::from_matrix(Mat4::from_rotation_translation( Quat, translation: Vec3) -> Mat4
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity()
-            ],
-
-            // Skinny
-            [
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity()
-            ]
-        ],
-
-        // Skinny
-        [
-            // Fat
-            [
-                // Skinny -> Fat UPPER_LEFT_SIDE
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity()
-            ],
-
-            // Skinny
-            [
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity(),
-                Transform::identity()
-            ]
-        ]
-    ];*/
 
     fn new_fat() -> Self {
         Rhombus {
@@ -274,14 +312,169 @@ impl Rhombus {
             penrose_type: PenroseRhombusType::Skinny
         }
     }
+}
 
-    fn get_matching_side(&self, side: usize, other_type: PenroseRhombusType) -> usize {
-        assert!(side < 4);
-        Rhombus::PENROSE_MATCHING_RULES[self.penrose_type as usize][other_type as usize][side]
+impl Default for Rhombus {
+    fn default() -> Self {
+        Rhombus::new_skinny()
     }
-    fn get_connection_transform(&self, other: &Rhombus, side: usize) -> Transform {
-        let self_large_angle = f32::to_radians(180.0) - self.small_angle;
+}
 
+fn calc_point_on_angle(scale: f32, angle: f32, leg_len: f32, origin: Vec2) -> Vec2 {
+    let hyp = leg_len * scale;
+    Vec2::new(origin.x + hyp * angle.cos(), origin.y + hyp * angle.sin())
+}
+
+fn get_tooth_points(scale: f32, angle: f32, leg_len: f32, origin: Vec2, offset: f32, inverted: bool) -> PointList {
+    let start_tooth = calc_point_on_angle(scale, angle / 2.0, leg_len, origin);
+    let end_tooth =  calc_point_on_angle(scale + 0.10, angle / 2.0, leg_len, origin);
+    let mut tooth_point = start_tooth + ((end_tooth - start_tooth) / 2.0);
+    tooth_point.y += if inverted { -offset } else { offset };
+
+    vec! [
+        start_tooth,
+        tooth_point,
+        end_tooth
+    ]
+}
+
+fn get_peg_points(scale: f32, angle: f32, leg_len: f32, origin: Vec2, offset: f32, inverted: bool) -> PointList {
+    let start_peg = calc_point_on_angle(scale, angle / 2.0, leg_len, origin);
+    let end_peg =  calc_point_on_angle(scale + 0.10, angle / 2.0, leg_len, origin);
+    let mut peg_point_1 = start_peg.clone();
+    peg_point_1.y += if inverted { -offset } else { offset };
+    let mut peg_point_2 = end_peg.clone();
+    peg_point_2.y += if inverted { -offset } else { offset };
+
+    vec! [
+        start_peg,
+        peg_point_1,
+        peg_point_2,
+        end_peg
+    ]
+}
+
+impl Tile for Rhombus {
+    type TileType = PenroseRhombusType;
+    fn has_free_sides(&self) -> bool {
+        return self.used_side_flags & 0xf != 0xf
+    }
+
+    fn get_free_sides(&self) -> SideFlags {
+        return !(self.used_side_flags & 0xf);
+    }
+
+    fn get_side_used(&self, side: usize) -> bool {
+        return (self.used_side_flags & (1 << side)) != 0;
+    }
+
+    fn set_side_used(&mut self, side: usize) {
+        self.used_side_flags |= 1 << side;
+    }
+
+    fn get_points(&self) -> PointList {
+        assert!(self.small_angle <= f32::to_radians(90.0));
+
+        // Create a rhombus centered at the origin
+        let long_diag_len = self.leg_len * (2.0 + 2.0 * self.small_angle.cos()).sqrt();
+        let half_long_diag = long_diag_len / 2.0;
+        let small_diag_len = self.leg_len * (2.0 - 2.0 * self.small_angle.cos()).sqrt();
+        let half_small_diag = small_diag_len / 2.0;
+
+        let left = Vec2::new(-half_long_diag, 0.0);
+        let top = Vec2::new(0.0, half_small_diag);
+        let right = Vec2::new(half_long_diag, 0.0);
+        let bottom = Vec2::new(0.0, -half_small_diag);
+
+        //let hyp = self.leg_len * 0.66;
+        //let seg = Vec2::new(left.x + hyp * (self.small_angle / 2.0).cos(), left.y + hyp * (self.small_angle / 2.0).sin());
+
+        match self.penrose_type {
+            PenroseRhombusType::Fat => {
+                let mut points = PointList::new();
+                points.push(left.clone());
+                points.append(&mut get_tooth_points(0.44, self.small_angle, self.leg_len, left, 12.0, true));
+                points.push(top.clone());
+                points.append(&mut get_peg_points(-0.44, -self.small_angle, self.leg_len, right, 12.0, true));
+                points.push(right);
+                points.append(&mut get_peg_points(-0.44, self.small_angle, self.leg_len, right, -10.0, false));
+                points.push(bottom);
+                points.append(&mut get_tooth_points(0.44, -self.small_angle, self.leg_len, left, -10.0, false));
+
+                points
+                /*vec![
+                    left,
+                    top,
+                    right,
+                    bottom
+                ]*/
+            },
+            PenroseRhombusType::Skinny => {                
+                let mut points = PointList::new();
+                points.push(left.clone());
+                points.append(&mut get_tooth_points(0.44, self.small_angle, self.leg_len, left, 10.0, false));
+                points.push(top.clone());
+                points.append(&mut get_tooth_points(-0.44, -self.small_angle, self.leg_len, right, 12.0, true));
+                points.push(right);
+                points.append(&mut get_peg_points(-0.44, self.small_angle, self.leg_len, right, -10.0, false));
+                points.push(bottom);
+                points.append(&mut get_peg_points(0.44, -self.small_angle, self.leg_len, left, -12.0, true));
+                
+                points
+                /*vec![
+                    left,
+                    start_tooth,
+                    tooth_point,
+                    end_tooth,
+                    top,
+                    right,
+                    bottom
+                ]*/
+
+            }
+        }
+    }
+
+    /*fn get_side_coordinates(&self, side:i32) -> (Vec2, Vec2) {
+        let uside = side as usize;
+        assert!(side >= 0 && uside < self.points.len());
+
+        let first_point = uside;
+        let second_point = (uside + 1) % self.points.len();
+        (self.points[first_point], self.points[second_point])
+    }*/
+
+    fn get_bundle_with_transform(&self, transform: Transform) -> ShapeBundle {
+        GeometryBuilder::build_as(
+            &shapes::Polygon {
+                points: self.get_points(),
+                closed: true
+            },
+            ShapeColors::outlined(self.color, Color::BLACK),
+            DrawMode::Outlined {
+                fill_options: FillOptions::default(),
+                outline_options: StrokeOptions::default().with_line_width(0.0),
+            },
+            transform
+        )
+    }
+
+    fn get_bundle(&self) -> ShapeBundle {
+        self.get_bundle_with_transform(Transform::default())
+    }
+
+    fn get_type(&self) -> Self::TileType {
+        self.penrose_type
+    }
+
+    fn get_matching_side(&self, side: usize, other_type: Self::TileType) -> usize {
+        assert!(side < 4);
+        Rhombus::PENROSE_MATCHING_RULES[self.get_type() as usize][other_type as usize][side]
+    }
+
+    fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform {
+        println!("{} {} {}", self.penrose_type as usize, side, other_type as usize);
+        ROTATION_TRANSFORMS[self.penrose_type as usize][other_type as usize][side]
         /*if self.get_side_used(side) {
             return None;
         }
@@ -291,13 +484,6 @@ impl Rhombus {
         if other.get_side_used(side) {
             return None;
         }*/
-
-        let points = self.get_points();
-        let point = match side {
-            Rhombus::UPPER_LEFT_SIDE | Rhombus::UPPER_RIGHT_SIDE => points[Rhombus::TOP_POINT],
-            Rhombus::LOWER_LEFT_SIDE | Rhombus::LOWER_LEFT_SIDE => points[Rhombus::BOTTOM_POINT],
-            _ => panic!("invalid side")
-        };
 
         //let rotation = 
 
@@ -338,82 +524,20 @@ impl Rhombus {
         } else {
             None
         }*/
-        Transform::identity()
     }
 }
 
-impl Default for Rhombus {
-    fn default() -> Self {
-        Rhombus::new_skinny()
-    }
+fn connect_tiles<T: Tile>(tile_existing: &mut T, tile_existing_side: usize, tile_to_connect: &mut T) {
+    assert!(!tile_existing.get_side_used(tile_existing_side));
+    
+    let side_to_match = tile_existing.get_matching_side(tile_existing_side, tile_to_connect.get_type());
+    assert!(!tile_to_connect.get_side_used(side_to_match));
+
+    tile_existing.set_side_used(tile_existing_side);
+    tile_to_connect.set_side_used(side_to_match);
 }
 
-impl Tile for Rhombus {
-    fn has_free_sides(&self) -> bool {
-        return self.used_side_flags & 0xf != 0xf
-    }
-    fn get_free_sides(&self) -> SideFlags {
-        return !(self.used_side_flags & 0xf);
-    }
-    fn get_side_used(&self, size: usize) -> bool {
-        return (self.used_side_flags & (1 << size)) != 0;
-    }
-    fn set_side_used(&mut self, side: usize) {
-        self.used_side_flags |= 1 << side;
-    }
-
-    fn get_points(&self) -> PointList {
-        assert!(self.small_angle <= f32::to_radians(90.0));
-
-        // Create a rhombus centered at the origin
-        let long_diag_len = self.leg_len * (2.0 + 2.0 * self.small_angle.cos()).sqrt();
-        let half_long_diag = long_diag_len / 2.0;
-        let small_diag_len = self.leg_len * (2.0 - 2.0 * self.small_angle.cos()).sqrt();
-        let half_small_diag = small_diag_len / 2.0;
-
-        let left = Vec2::new(-half_long_diag, 0.0);
-        let top = Vec2::new(0.0, half_small_diag);
-        let right = Vec2::new(half_long_diag, 0.0);
-        let bottom = Vec2::new(0.0, -half_small_diag);
-
-        vec![
-            left,
-            top,
-            right,
-            bottom
-        ]
-    }
-
-    /*fn get_side_coordinates(&self, side:i32) -> (Vec2, Vec2) {
-        let uside = side as usize;
-        assert!(side >= 0 && uside < self.points.len());
-
-        let first_point = uside;
-        let second_point = (uside + 1) % self.points.len();
-        (self.points[first_point], self.points[second_point])
-    }*/
-
-    fn get_bundle_with_transform(&self, transform: Transform) -> ShapeBundle {
-        GeometryBuilder::build_as(
-            &shapes::Polygon {
-                points: self.get_points(),
-                closed: true
-            },
-            ShapeColors::outlined(self.color, Color::BLACK),
-            DrawMode::Outlined {
-                fill_options: FillOptions::default(),
-                outline_options: StrokeOptions::default().with_line_width(2.0),
-            },
-            transform
-        )
-    }
-
-    fn get_bundle(&self) -> ShapeBundle {
-        self.get_bundle_with_transform(Transform::default())
-    }
-
-}
-
+//fn connect_and_translate
 
 fn main() {
     App::build()
@@ -424,7 +548,6 @@ fn main() {
         .add_system(shapes.system())
         .run();
 }
-
 
 fn setup(mut commands: Commands) {
 
@@ -450,18 +573,39 @@ fn setup(mut commands: Commands) {
 
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
-    let fat = Rhombus::new_fat();
-    let skinny = Rhombus::new_skinny();
+    let r1 = Rhombus::new_fat();
+    let r2 = Rhombus::new_skinny();
+    let r3 = Rhombus::new_skinny();
+    let r4 = Rhombus::new_skinny();
+    let r5 = Rhombus::new_skinny();
 
     commands.spawn_bundle(
-        fat.get_bundle()
-    ).insert(fat.clone());
+        r1.get_bundle()
+    ).insert(r1.clone());
 
-    let skinny1_transform = fat.get_connection_transform(&skinny, Rhombus::UPPER_RIGHT_SIDE);
+    let r2_transform = r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type());
     commands.spawn_bundle(
         //fat.get_bundle_with_transform(fat.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap())
-        skinny.get_bundle_with_transform(skinny1_transform)
-    ).insert(skinny.clone());
+        r2.get_bundle_with_transform(r2_transform)
+    ).insert(r2.clone());
+
+    let r3_transform = r1.get_connection_transform(Rhombus::UPPER_RIGHT_SIDE, r3.get_type());
+    commands.spawn_bundle(
+        //fat.get_bundle_with_transform(fat.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap())
+        r3.get_bundle_with_transform(r3_transform)
+    ).insert(r3.clone());
+
+    let r4_transform = r1.get_connection_transform(Rhombus::LOWER_RIGHT_SIDE, r4.get_type());
+    commands.spawn_bundle(
+        //fat.get_bundle_with_transform(fat.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap())
+        r4.get_bundle_with_transform(r4_transform)
+    ).insert(r4.clone());
+
+    let r5_transform = r1.get_connection_transform(Rhombus::LOWER_LEFT_SIDE, r5.get_type());
+    commands.spawn_bundle(
+        //fat.get_bundle_with_transform(fat.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap())
+        r5.get_bundle_with_transform(r5_transform)
+    ).insert(r5.clone());
 
     /*let mut fat_transform = skinny.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap();
     fat_transform = fat_transform * skinny1_transform;
