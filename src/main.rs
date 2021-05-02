@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_prototype_lyon::prelude::*;
 use bevy::math::Vec2;
 use bevy::prelude::Commands;
+use bevy::ecs::system::EntityCommands;
 use bevy_prototype_lyon::entity::{ShapeBundle, ShapeColors};
 
 #[macro_use]
@@ -12,10 +13,11 @@ type SideFlags = u8;
 
 trait Tile {
     type TileType;
-    fn get_bundle_with_transform(&self, transform: Transform) -> ShapeBundle;
-    fn get_bundle(&self) -> ShapeBundle {
-        self.get_bundle_with_transform(Transform::default())
-    }
+    /*fn insert_shapes_with_transform(&self, transform: Transform, commands: &mut Commands);
+        self.insert_shapes_with_transform(Transform::default(), commands)
+    }*/
+    fn spawn_shape(&self, transform: Transform, entity_commands: &mut EntityCommands);
+    fn spawn_dots(&self, transform: Transform, entity_commands: &mut EntityCommands);
     fn has_free_sides(&self) -> bool;
     fn get_free_sides(&self) -> SideFlags;
     fn set_side_used(&mut self, side: usize);
@@ -259,8 +261,11 @@ impl Rhombus {
     const LOWER_LEFT_SIDE: usize = 3;
 
     const PENROSE_POINT_INDICES: [[usize; 4]; 2] = [
-        [0, 1+3, 2+7, 3+11],
-        [0, 1+3, 2+6, 3+10]
+        //[0, 1+3, 2+7, 3+11],
+        //[0, 1+3, 2+6, 3+10]
+
+        [0, 1, 2, 3],
+        [0, 1, 2, 3]
     ];
 
     fn get_left_index(&self) -> usize {
@@ -354,6 +359,11 @@ fn get_peg_points(scale: f32, angle: f32, leg_len: f32, origin: Vec2, offset: f3
     ]
 }
 
+fn get_edge_point(scale: f32, angle: f32, point: Vec2) -> Vec2 {
+    let x_coord = point.x * 0.66;
+    Vec2::new(x_coord, (point.x - x_coord) * angle.tan())
+}
+
 impl Tile for Rhombus {
     type TileType = PenroseRhombusType;
     fn has_free_sides(&self) -> bool {
@@ -392,14 +402,14 @@ impl Tile for Rhombus {
         match self.penrose_type {
             PenroseRhombusType::Fat => {
                 let mut points = PointList::new();
-                points.push(left.clone());
-                points.append(&mut get_tooth_points(0.44, self.small_angle, self.leg_len, left, 12.0, true));
-                points.push(top.clone());
-                points.append(&mut get_peg_points(-0.44, -self.small_angle, self.leg_len, right, 12.0, true));
+                points.push(left);
+                //points.append(&mut get_tooth_points(0.44, self.small_angle, self.leg_len, left, 12.0, true));
+                points.push(top);
+                //points.append(&mut get_peg_points(-0.44, -self.small_angle, self.leg_len, right, 12.0, true));
                 points.push(right);
-                points.append(&mut get_peg_points(-0.44, self.small_angle, self.leg_len, right, -10.0, false));
+                //points.append(&mut get_peg_points(-0.44, self.small_angle, self.leg_len, right, -10.0, false));
                 points.push(bottom);
-                points.append(&mut get_tooth_points(0.44, -self.small_angle, self.leg_len, left, -10.0, false));
+                //points.append(&mut get_tooth_points(0.44, -self.small_angle, self.leg_len, left, -10.0, false));
 
                 points
                 /*vec![
@@ -411,14 +421,14 @@ impl Tile for Rhombus {
             },
             PenroseRhombusType::Skinny => {                
                 let mut points = PointList::new();
-                points.push(left.clone());
-                points.append(&mut get_tooth_points(0.44, self.small_angle, self.leg_len, left, 10.0, false));
-                points.push(top.clone());
-                points.append(&mut get_tooth_points(-0.44, -self.small_angle, self.leg_len, right, 12.0, true));
+                points.push(left);
+                //points.append(&mut get_tooth_points(0.44, self.small_angle, self.leg_len, left, 10.0, false));
+                points.push(top);
+                //points.append(&mut get_tooth_points(-0.44, -self.small_angle, self.leg_len, right, 12.0, true));
                 points.push(right);
-                points.append(&mut get_peg_points(-0.44, self.small_angle, self.leg_len, right, -10.0, false));
+                //points.append(&mut get_peg_points(-0.44, self.small_angle, self.leg_len, right, -10.0, false));
                 points.push(bottom);
-                points.append(&mut get_peg_points(0.44, -self.small_angle, self.leg_len, left, -12.0, true));
+                //points.append(&mut get_peg_points(0.44, -self.small_angle, self.leg_len, left, -12.0, true));
                 
                 points
                 /*vec![
@@ -444,8 +454,8 @@ impl Tile for Rhombus {
         (self.points[first_point], self.points[second_point])
     }*/
 
-    fn get_bundle_with_transform(&self, transform: Transform) -> ShapeBundle {
-        GeometryBuilder::build_as(
+    /*fn insert_shapes_with_transform(&self, transform: Transform, commands: &mut Commands) {
+        commands.insert(GeometryBuilder::build_as(
             &shapes::Polygon {
                 points: self.get_points(),
                 closed: true
@@ -453,15 +463,49 @@ impl Tile for Rhombus {
             ShapeColors::outlined(self.color, Color::BLACK),
             DrawMode::Outlined {
                 fill_options: FillOptions::default(),
-                outline_options: StrokeOptions::default().with_line_width(0.0),
+                outline_options: StrokeOptions::default().with_line_width(2.0),
             },
             transform
-        )
+        ))
+    }*/
+
+    fn spawn_shape(&self, transform: Transform, entity_commands: &mut EntityCommands) {
+        entity_commands.insert_bundle(
+            GeometryBuilder::build_as(
+                &shapes::Polygon {
+                    points: self.get_points(),
+                    closed: true
+                },
+                ShapeColors::outlined(self.color, Color::BLACK),
+                DrawMode::Outlined {
+                    fill_options: FillOptions::default(),
+                    outline_options: StrokeOptions::default().with_line_width(2.0),
+                },
+                transform
+            )
+        );
     }
 
-    fn get_bundle(&self) -> ShapeBundle {
-        self.get_bundle_with_transform(Transform::default())
+    fn spawn_dots(&self, mut transform: Transform, entity_commands: &mut EntityCommands) {
+        let points = self.get_points();
+        transform.translation.z = 1.0;
+
+        entity_commands.insert_bundle(
+            GeometryBuilder::build_as(
+                &shapes::Circle {
+                    radius: 5.0,
+                    center: get_edge_point(0.66, (self.small_angle / 2.0), points[self.get_right_index()])
+                },
+                ShapeColors::outlined(Color::rgba_u8(0, 255, 0, 127), Color::BLACK),
+                DrawMode::Outlined {
+                    fill_options: FillOptions::default(),
+                    outline_options: StrokeOptions::default().with_line_width(2.0),
+                },
+                transform
+            )
+        );
     }
+
 
     fn get_type(&self) -> Self::TileType {
         self.penrose_type
@@ -579,11 +623,30 @@ fn setup(mut commands: Commands) {
     let r4 = Rhombus::new_skinny();
     let r5 = Rhombus::new_skinny();
 
-    commands.spawn_bundle(
-        r1.get_bundle()
-    ).insert(r1.clone());
 
-    let r2_transform = r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type());
+    let mut entity = commands.spawn();
+    r1.spawn_shape(Transform::identity(), &mut entity);
+    entity.insert(r1.clone());
+    let mut entity = commands.spawn();
+    r1.spawn_dots(Transform::identity(), &mut entity);
+
+    let mut entity = commands.spawn();
+    r2.spawn_shape(r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type()), &mut entity);
+    entity.insert(r2.clone());
+
+    let mut entity = commands.spawn();
+    r3.spawn_shape(r1.get_connection_transform(Rhombus::UPPER_RIGHT_SIDE, r3.get_type()), &mut entity);
+    entity.insert(r3.clone());
+
+    let mut entity = commands.spawn();
+    r4.spawn_shape(r1.get_connection_transform(Rhombus::LOWER_RIGHT_SIDE, r4.get_type()), &mut entity);
+    entity.insert(r4.clone());
+
+    let mut entity = commands.spawn();
+    r5.spawn_shape(r1.get_connection_transform(Rhombus::LOWER_LEFT_SIDE, r5.get_type()), &mut entity);
+    entity.insert(r5.clone());
+    
+    /*let r2_transform = r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type());
     commands.spawn_bundle(
         //fat.get_bundle_with_transform(fat.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap())
         r2.get_bundle_with_transform(r2_transform)
@@ -605,7 +668,7 @@ fn setup(mut commands: Commands) {
     commands.spawn_bundle(
         //fat.get_bundle_with_transform(fat.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap())
         r5.get_bundle_with_transform(r5_transform)
-    ).insert(r5.clone());
+    ).insert(r5.clone());*/
 
     /*let mut fat_transform = skinny.get_connection_transform(&fat, Rhombus::UPPER_RIGHT_SIDE).unwrap();
     fat_transform = fat_transform * skinny1_transform;
