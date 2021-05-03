@@ -16,8 +16,8 @@ trait Tile {
     /*fn insert_shapes_with_transform(&self, transform: Transform, commands: &mut Commands);
         self.insert_shapes_with_transform(Transform::default(), commands)
     }*/
-    fn spawn_shape(&self, transform: Transform, entity_commands: &mut EntityCommands);
-    fn spawn_dots(&self, transform: Transform, entity_commands: &mut EntityCommands);
+    fn insert_shape_component(&self, transform: Transform, entity_commands: &mut EntityCommands);
+    fn spawn_dots_entities(&self, transform: Transform, commands: &mut Commands);
     fn has_free_sides(&self) -> bool;
     fn get_free_sides(&self) -> SideFlags;
     fn set_side_used(&mut self, side: usize);
@@ -298,6 +298,28 @@ impl Rhombus {
         ]
     ];
 
+    const PENROSE_EDGE_DOT_COLORS: [[Color; 4]; 2] = [
+        [
+            // Fat colors
+            Color::DARK_GREEN, Color::VIOLET, Color::PURPLE, Color::LIME_GREEN
+        ],
+        [
+            // Skinny colors
+            Color::LIME_GREEN, Color::DARK_GREEN, Color::PURPLE, Color::VIOLET
+        ]
+    ];
+
+    const PENROSE_POINT_SCALES: [[f32; 4]; 2] = [
+        [
+            // Fat scales
+            0.33, 0.66, 0.66, 0.33
+        ],
+        [
+            // Skinny scales
+            0.66, 0.66, 0.66, 0.66
+        ]
+    ];
+
     fn new_fat() -> Self {
         Rhombus {
             small_angle: f32::to_radians(Rhombus::FAT_SMALL_ANGLE),
@@ -359,9 +381,45 @@ fn get_peg_points(scale: f32, angle: f32, leg_len: f32, origin: Vec2, offset: f3
     ]
 }
 
-fn get_edge_point(scale: f32, angle: f32, point: Vec2) -> Vec2 {
-    let x_coord = point.x * 0.66;
-    Vec2::new(x_coord, (point.x - x_coord) * angle.tan())
+fn get_edge_point(scale: f32, radius: f32, angle: f32, point: Vec2, neg_y: bool) -> Vec2 {
+    let x_coord = point.x * scale;
+    let y_coord = (point.x - x_coord).abs() * angle.tan() - radius;
+    let y_coord = if neg_y { -y_coord } else { y_coord };
+    Vec2::new(x_coord, y_coord)
+}
+
+fn insert_edge_point(rhombus: &Rhombus, side: usize, transform: Transform, entity_commands: &mut EntityCommands) {
+    let radius = 5.0;
+    let scale = Rhombus::PENROSE_POINT_SCALES[rhombus.penrose_type as usize][side];
+    let angle = rhombus.small_angle / 2.0;
+
+    let (point_index, neg_y) = match side {
+        Rhombus::UPPER_LEFT_SIDE => (rhombus.get_left_index(), false),
+        Rhombus::UPPER_RIGHT_SIDE => (rhombus.get_right_index(), false),
+        Rhombus::LOWER_RIGHT_SIDE => (rhombus.get_right_index(), true),
+        Rhombus::LOWER_LEFT_SIDE => (rhombus.get_left_index(), true),
+        _ => panic!("invalid index!")
+    };
+    let point = rhombus.get_points()[point_index];
+    let color = Rhombus::PENROSE_EDGE_DOT_COLORS[rhombus.penrose_type as usize][side];
+    let angle = if point.y < 0.0 { -angle } else { angle };
+
+    println!("scale: {}, angle: {}, point: {}, color: {:?}", scale, angle, point, color);
+
+    entity_commands.insert_bundle(
+        GeometryBuilder::build_as(
+            &shapes::Circle {
+                radius: radius,
+                center: get_edge_point(scale, radius, angle, point, neg_y)
+            },
+            ShapeColors::outlined(color, Color::BLACK),
+            DrawMode::Outlined {
+                fill_options: FillOptions::default(),
+                outline_options: StrokeOptions::default().with_line_width(2.0),
+            },
+            transform
+        )
+    );
 }
 
 impl Tile for Rhombus {
@@ -469,7 +527,7 @@ impl Tile for Rhombus {
         ))
     }*/
 
-    fn spawn_shape(&self, transform: Transform, entity_commands: &mut EntityCommands) {
+    fn insert_shape_component(&self, transform: Transform, entity_commands: &mut EntityCommands) {
         entity_commands.insert_bundle(
             GeometryBuilder::build_as(
                 &shapes::Polygon {
@@ -486,24 +544,55 @@ impl Tile for Rhombus {
         );
     }
 
-    fn spawn_dots(&self, mut transform: Transform, entity_commands: &mut EntityCommands) {
-        let points = self.get_points();
+    fn spawn_dots_entities(&self, mut transform: Transform, commands: &mut Commands) {
         transform.translation.z = 1.0;
 
-        entity_commands.insert_bundle(
+        insert_edge_point(self, 0, transform, &mut commands.spawn());
+        insert_edge_point(self, 1, transform, &mut commands.spawn());
+        insert_edge_point(self, 2, transform, &mut commands.spawn());
+        insert_edge_point(self, 3, transform, &mut commands.spawn());
+
+        /*insert_edge_point(
+            0.33, 
+            dot_radius, 
+            self.small_angle / 2.0,
+            points[self.get_right_index()],
+            Rhombus::PENROSE_EDGE_DOT_COLORS[self.penrose_type as usize][Rhombus::UPPER_RIGHT_SIDE], 
+            transform, 
+            entity_commands);
+
+        insert_edge_point(
+            0.33, 
+            dot_radius, 
+            -self.small_angle / 2.0,
+            points[self.get_left_index()],
+            Rhombus::PENROSE_EDGE_DOT_COLORS[self.penrose_type as usize][Rhombus::UPPER_LEFT_SIDE], 
+            transform, 
+            entity_commands);
+
+        insert_edge_point(
+            0.33, 
+            dot_radius, 
+            -self.small_angle / 2.0,
+            points[self.get_left_index()],
+            Rhombus::PENROSE_EDGE_DOT_COLORS[self.penrose_type as usize][Rhombus::UPPER_LEFT_SIDE], 
+            transform, 
+            entity_commands);*/
+
+        /*entity_commands.insert_bundle(
             GeometryBuilder::build_as(
                 &shapes::Circle {
-                    radius: 5.0,
-                    center: get_edge_point(0.66, (self.small_angle / 2.0), points[self.get_right_index()])
+                    radius: dot_radius,
+                    center: get_edge_point(0.66, dot_radius, self.small_angle / 2.0, points[self.get_right_index()])
                 },
-                ShapeColors::outlined(Color::rgba_u8(0, 255, 0, 127), Color::BLACK),
+                ShapeColors::outlined(Color::GREEN, Color::BLACK),
                 DrawMode::Outlined {
                     fill_options: FillOptions::default(),
                     outline_options: StrokeOptions::default().with_line_width(2.0),
                 },
                 transform
             )
-        );
+        );*/
     }
 
 
@@ -625,26 +714,34 @@ fn setup(mut commands: Commands) {
 
 
     let mut entity = commands.spawn();
-    r1.spawn_shape(Transform::identity(), &mut entity);
+    r1.insert_shape_component(Transform::identity(), &mut entity);
     entity.insert(r1.clone());
-    let mut entity = commands.spawn();
-    r1.spawn_dots(Transform::identity(), &mut entity);
+    r1.spawn_dots_entities(Transform::identity(), &mut commands);
 
     let mut entity = commands.spawn();
-    r2.spawn_shape(r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type()), &mut entity);
+    let transform = r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type());
+    r2.insert_shape_component(transform, &mut entity);
     entity.insert(r2.clone());
+    r2.spawn_dots_entities(transform, &mut commands);
 
     let mut entity = commands.spawn();
-    r3.spawn_shape(r1.get_connection_transform(Rhombus::UPPER_RIGHT_SIDE, r3.get_type()), &mut entity);
+    let transform = r1.get_connection_transform(Rhombus::UPPER_RIGHT_SIDE, r3.get_type());
+    r3.insert_shape_component(transform, &mut entity);
     entity.insert(r3.clone());
+    r3.spawn_dots_entities(transform, &mut commands);
 
     let mut entity = commands.spawn();
-    r4.spawn_shape(r1.get_connection_transform(Rhombus::LOWER_RIGHT_SIDE, r4.get_type()), &mut entity);
+    let transform = r1.get_connection_transform(Rhombus::LOWER_RIGHT_SIDE, r4.get_type());
+    r4.insert_shape_component(transform, &mut entity);
     entity.insert(r4.clone());
+    r4.spawn_dots_entities(transform, &mut commands);
 
     let mut entity = commands.spawn();
-    r5.spawn_shape(r1.get_connection_transform(Rhombus::LOWER_LEFT_SIDE, r5.get_type()), &mut entity);
+    let transform = r1.get_connection_transform(Rhombus::LOWER_LEFT_SIDE, r5.get_type());
+    r5.insert_shape_component(transform, &mut entity);
     entity.insert(r5.clone());
+    r5.spawn_dots_entities(transform, &mut commands);
+
     
     /*let r2_transform = r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type());
     commands.spawn_bundle(
