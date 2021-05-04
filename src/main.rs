@@ -110,31 +110,30 @@ lazy_static! {
             {
                 fat.push(Vec::<Transform>::new());
                 {
-                    let fat_fat_angle = f32::to_radians(180.0) + (f32::to_radians(180.0) - Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::FAT_LARGE_ANGLE / 2.0);
-                    let half_small_y_translate = Vec2::new(0.0, fat_half_small_diag);
+                    let fat_vert_angle = f32::to_radians(180.0 - Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::FAT_LARGE_ANGLE / 2.0);
                     let fat_fat_sides = &mut fat[0];
                     {
                         // Fat on Fat on side 0
                         fat_fat_sides.push(
-                            make_rotation_transform(fat_fat_angle, fat_points[r_fat.get_top_index()] + half_small_y_translate)
+                            make_rotation_transform_good(fat_vert_angle, fat_points[r_fat.get_top_index()], fat_half_small_diag)
                         );
                     }
                     {
                         // Fat on Fat on side 1
                         fat_fat_sides.push(
-                            make_rotation_transform(-fat_fat_angle, fat_points[r_fat.get_top_index()] + half_small_y_translate)
+                            make_rotation_transform_good(-fat_vert_angle, fat_points[r_fat.get_top_index()], fat_half_small_diag)
                         );
                     }
                     {
                         // Fat on Fat on side 2
                         fat_fat_sides.push(
-                            make_rotation_transform(fat_fat_angle, fat_points[r_fat.get_bottom_index()] - half_small_y_translate)
+                            make_rotation_transform_good(fat_vert_angle, fat_points[r_fat.get_bottom_index()], -fat_half_small_diag)
                         );
                     }
                     {
                         // Fat on Fat on side 3
                         fat_fat_sides.push(
-                            make_rotation_transform(-fat_fat_angle, fat_points[r_fat.get_bottom_index()] - half_small_y_translate)
+                            make_rotation_transform_good(-fat_vert_angle, fat_points[r_fat.get_bottom_index()], -fat_half_small_diag)
                         );
                     }
                 }
@@ -180,31 +179,31 @@ lazy_static! {
             {
                 skinny.push(Vec::<Transform>::new());
                 {
-                    let fat_skinny_angle = f32::to_radians(180.0 - Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0);
+                    let fat_skinny_angle = f32::to_radians(180.0 + Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0);
                     let half_small_y_translate = Vec2::new(0.0, fat_half_small_diag);
                     let skinny_fat_sides = &mut skinny[0];
                     {
                         // Fat on Skinny on side 0
                         skinny_fat_sides.push(
-                            make_rotation_transform(fat_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
+                            make_rotation_transform_good(fat_skinny_angle, skinny_points[r_skinny.get_left_index()], -fat_half_small_diag)
                         );
                     }
                     {
                         // Fat on Skinny on side 1
                         skinny_fat_sides.push(
-                            make_rotation_transform(-fat_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
+                            make_rotation_transform_good(-fat_skinny_angle, skinny_points[r_skinny.get_top_index()], fat_half_small_diag)
                         );
                     }
                     {
                         // Fat on Skinny on side 2
                         skinny_fat_sides.push(
-                            make_rotation_transform(fat_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
+                            make_rotation_transform_good(fat_skinny_angle, skinny_points[r_skinny.get_bottom_index()], fat_half_small_diag)
                         );
                     }
                     {
                         // Fat on Skinny on side 3
                         skinny_fat_sides.push(
-                            make_rotation_transform(-fat_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
+                            make_rotation_transform_good(-fat_skinny_angle, skinny_points[r_skinny.get_bottom_index()], fat_half_small_diag)
                         );
                     }
                 }
@@ -212,29 +211,29 @@ lazy_static! {
                 {
                     let skinny_skinny_angle = f32::to_radians(180.0 + 180.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0);
                     let half_small_y_translate = Vec2::new(0.0, skinny_half_small_diag);
-                    let skinny_skinny_sides = &mut skinny[0];
+                    let skinny_skinny_sides = &mut skinny[1];
                     {
                         // Skinny -> Skinny on side 0
                         skinny_skinny_sides.push(
-                            make_rotation_transform(skinny_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
+                            make_rotation_transform_good(skinny_skinny_angle, skinny_points[r_skinny.get_top_index()], -skinny_half_small_diag)
                         );
                     }
                     {
                         // Skinny -> Skinny on side 1
                         skinny_skinny_sides.push(
-                            make_rotation_transform(-skinny_skinny_angle, skinny_points[r_skinny.get_top_index()] + half_small_y_translate)
+                            make_rotation_transform_good(-skinny_skinny_angle, skinny_points[r_skinny.get_top_index()], -skinny_half_small_diag)
                         );
                     }
                     {
                         // Skinny -> Skinny on side 2
                         skinny_skinny_sides.push(
-                            make_rotation_transform(skinny_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
+                            make_rotation_transform_good(skinny_skinny_angle, skinny_points[r_skinny.get_bottom_index()], skinny_half_small_diag)
                         );
                     }
                     {
                         // Skinny -> Skinny on side 3
                         skinny_skinny_sides.push(
-                            make_rotation_transform(-skinny_skinny_angle, skinny_points[r_skinny.get_bottom_index()] - half_small_y_translate)
+                            make_rotation_transform_good(-skinny_skinny_angle, skinny_points[r_skinny.get_bottom_index()], skinny_half_small_diag)
                         );
                     }
                 }
@@ -606,7 +605,7 @@ impl Tile for Rhombus {
     }
 
     fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform {
-        println!("{} {} {}", self.penrose_type as usize, side, other_type as usize);
+        println!("{} {} {}", self.penrose_type as usize, other_type as usize, side);
         ROTATION_TRANSFORMS[self.penrose_type as usize][other_type as usize][side]
         /*if self.get_side_used(side) {
             return None;
@@ -706,11 +705,11 @@ fn setup(mut commands: Commands) {
 
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
-    let r1 = Rhombus::new_fat();
-    let r2 = Rhombus::new_skinny();
-    let r3 = Rhombus::new_skinny();
-    let r4 = Rhombus::new_skinny();
-    let r5 = Rhombus::new_skinny();
+    let r1 = Rhombus::new_skinny();
+    let r2 = Rhombus::new_fat();
+    let r3 = Rhombus::new_fat();
+    let r4 = Rhombus::new_fat();
+    let r5 = Rhombus::new_fat();
 
 
     let mut entity = commands.spawn();
@@ -724,7 +723,7 @@ fn setup(mut commands: Commands) {
     entity.insert(r2.clone());
     r2.spawn_dots_entities(transform, &mut commands);
 
-    let mut entity = commands.spawn();
+    /*let mut entity = commands.spawn();
     let transform = r1.get_connection_transform(Rhombus::UPPER_RIGHT_SIDE, r3.get_type());
     r3.insert_shape_component(transform, &mut entity);
     entity.insert(r3.clone());
@@ -740,7 +739,7 @@ fn setup(mut commands: Commands) {
     let transform = r1.get_connection_transform(Rhombus::LOWER_LEFT_SIDE, r5.get_type());
     r5.insert_shape_component(transform, &mut entity);
     entity.insert(r5.clone());
-    r5.spawn_dots_entities(transform, &mut commands);
+    r5.spawn_dots_entities(transform, &mut commands);*/
 
     
     /*let r2_transform = r1.get_connection_transform(Rhombus::UPPER_LEFT_SIDE, r2.get_type());
