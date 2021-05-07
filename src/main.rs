@@ -3,61 +3,19 @@ use bevy_prototype_lyon::prelude::*;
 use bevy::math::Vec2;
 use bevy::prelude::Commands;
 use bevy::ecs::system::EntityCommands;
-use bevy_prototype_lyon::entity::{ShapeBundle, ShapeColors};
+use bevy::ecs::component::Component;
+use rand::prelude::*;
+use std::ops::DerefMut;
 
 #[macro_use]
 extern crate lazy_static;
 
-type PointList = Vec<Vec2>;
-type SideFlags = u8;
+#[macro_use]
+extern crate enum_primitive_derive;
+extern crate num_traits;
 
-trait Tile {
-    type TileType;
-    /*fn insert_shapes_with_transform(&self, transform: Transform, commands: &mut Commands);
-        self.insert_shapes_with_transform(Transform::default(), commands)
-    }*/
-    fn insert_shape_component(&self, transform: Transform, entity_commands: &mut EntityCommands);
-    fn spawn_dots_entities(&self, transform: Transform, commands: &mut Commands);
-    fn has_free_sides(&self) -> bool;
-    fn get_free_sides(&self) -> SideFlags;
-    fn set_side_used(&mut self, side: usize);
-    fn get_side_used(&self, side: usize) -> bool;
-    fn get_points(&self) -> PointList;
-    fn get_type(&self) -> Self::TileType;
-    fn get_matching_side(&self, side: usize, other_type: Self::TileType) -> usize;
-    fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform;
-}
+use num_traits::FromPrimitive;
 
-#[derive(Clone, Copy)]
-enum PenroseRhombusType {
-    Fat = 0,
-    Skinny
-}
-
-#[derive(Clone)]
-struct Rhombus {
-    small_angle: f32,
-    leg_len: f32,
-    color: Color,
-    used_side_flags: u8,
-    penrose_type: PenroseRhombusType
-    //points: PointList
-}
-
-fn make_rotation_transform(angle: f32, translation: Vec2, distance_to_center_from_translation: f32) -> Transform {
-    let centerpoint = Vec3::new(0.0, distance_to_center_from_translation, 0.0);
-    let rotation = Quat::from_rotation_z(angle);
-    let centerpoint_rotated = rotation * centerpoint;
-    let vec3_translation = Vec3::from((translation, 0.0));
-    let centerpoint_translated_rotated = centerpoint_rotated + vec3_translation;
-
-    Transform::from_matrix(
-        Mat4::from_rotation_translation(
-            rotation,
-            centerpoint_translated_rotated
-        )
-    )
-}
 
 lazy_static! {
     static ref ROTATION_TRANSFORMS: Vec<Vec<Vec<Transform>>> = {
@@ -69,9 +27,6 @@ lazy_static! {
 
         let fat_small_diag_len = r_fat.leg_len * (2.0 - 2.0 * r_fat.small_angle.cos()).sqrt();
         let fat_half_small_diag = fat_small_diag_len / 2.0;
-
-        let fat_long_diag_len = r_fat.leg_len * (2.0 + 2.0 * r_fat.small_angle.cos()).sqrt();
-        let fat_half_long_diag = fat_long_diag_len / 2.0;
 
         let skinny_small_diag_len = r_skinny.leg_len * (2.0 - 2.0 * r_skinny.small_angle.cos()).sqrt();
         let skinny_half_small_diag = skinny_small_diag_len / 2.0;
@@ -150,7 +105,6 @@ lazy_static! {
                 skinny.push(Vec::<Transform>::new());
                 {
                     let fat_skinny_horizontal_angle = f32::to_radians(180.0 + Rhombus::FAT_LARGE_ANGLE / 2.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0);
-                    let fat_skinny_vert_angle = f32::to_radians(180.0 + 180.0 - Rhombus::SKINNY_LARGE_ANGLE / 2.0 - Rhombus::FAT_LARGE_ANGLE / 2.0);
 
                     let skinny_fat_sides = &mut skinny[0];
                     {
@@ -213,6 +167,111 @@ lazy_static! {
     };
 }
 
+type PointList = Vec<Vec2>;
+
+trait Tile : Component {
+    type TileType;
+    fn new_random() -> Self;
+    fn get_num_sides() -> usize;
+    fn insert_shape_component(&self, transform: Transform, entity_commands: &mut EntityCommands);
+    fn spawn_dots_entities(&self, transform: Transform, commands: &mut Commands);
+    fn has_free_sides(&self) -> bool;
+    fn get_free_sides(&self) -> Vec<usize>;
+    fn set_side_used(&mut self, side: usize);
+    fn get_side_used(&self, side: usize) -> bool;
+    fn get_points(&self) -> PointList;
+    fn get_type(&self) -> Self::TileType;
+    fn get_matching_side(&self, side: usize, other_type: Self::TileType) -> usize;
+    fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform;
+}
+
+struct TileWithTransform<'a, T: Tile>{
+    tile: &'a mut T,
+    transform: &'a Transform
+}
+
+impl<'a, T: Tile> TileWithTransform<'a, T> {
+    fn new(tile: &'a mut T, transform: &'a Transform) -> Self {
+        TileWithTransform {
+            tile: tile,
+            transform: transform
+        }
+    }
+}
+
+#[derive(Default)]
+struct PenroseTiler {
+    tiles_added: Vec<Entity>
+}
+struct EdgeTile;
+
+impl PenroseTiler {
+    fn spawn_tile_at<T: Tile>(&mut self, tile: T, transform: Transform, commands: &mut Commands) {
+        tile.spawn_dots_entities(transform, commands);
+        let mut entity = commands.spawn();
+        tile.insert_shape_component(transform, &mut entity);
+        entity.insert(tile);
+        entity.insert(EdgeTile);
+
+        self.tiles_added.push(entity.id());
+    }
+    fn spawn_tile_at_origin<T: Tile>(&mut self, tile: T, commands: &mut Commands) {
+        self.spawn_tile_at(tile, Transform::identity(), commands);
+    }
+
+    fn spawn_tile_on<T: Tile>(&mut self, side: usize, mut tile: T, on_tile: TileWithTransform<T>, commands: &mut Commands) {
+        assert!(!on_tile.tile.get_side_used(side));
+
+        let transform = (*on_tile.transform) * on_tile.tile.get_connection_transform(side, tile.get_type());
+        tile.set_side_used(on_tile.tile.get_matching_side(side, tile.get_type()));
+        self.spawn_tile_at(tile, transform, commands);
+        on_tile.tile.set_side_used(side);
+    }
+    fn spawn_random_tile_at_origin<T: Tile>(&mut self, commands: &mut Commands) {
+        self.spawn_tile_at_origin(T::new_random(), commands);
+    }
+    fn spawn_random_tile_on<T: Tile>(&mut self, on_tile: TileWithTransform<T>, commands: &mut Commands) {
+        let free_sides = on_tile.tile.get_free_sides();
+        assert!(!free_sides.is_empty());
+        let index = rand::thread_rng().gen_range(0..free_sides.len());
+        let side = free_sides[index];
+        let tile = T::new_random();
+        self.spawn_tile_on(side, tile, on_tile, commands);
+    }
+}
+
+#[derive(Clone, Copy, Primitive)]
+enum PenroseRhombusType {
+    Fat = 0,
+    Skinny = 1,
+
+    Count = 2
+}
+
+#[derive(Clone)]
+struct Rhombus {
+    small_angle: f32,
+    leg_len: f32,
+    color: Color,
+    used_side_flags: u8,
+    penrose_type: PenroseRhombusType
+    //points: PointList
+}
+
+fn make_rotation_transform(angle: f32, translation: Vec2, distance_to_center_from_translation: f32) -> Transform {
+    let centerpoint = Vec3::new(0.0, distance_to_center_from_translation, 0.0);
+    let rotation = Quat::from_rotation_z(angle);
+    let centerpoint_rotated = rotation * centerpoint;
+    let vec3_translation = Vec3::from((translation, 0.0));
+    let centerpoint_translated_rotated = centerpoint_rotated + vec3_translation;
+
+    Transform::from_matrix(
+        Mat4::from_rotation_translation(
+            rotation,
+            centerpoint_translated_rotated
+        )
+    )
+}
 
 impl Rhombus {
     const FAT_SMALL_ANGLE: f32 = 72.0;
@@ -289,6 +348,14 @@ impl Rhombus {
         ]
     ];
 
+    fn new(penrose_type: PenroseRhombusType) -> Self {
+        match penrose_type {
+            PenroseRhombusType::Fat => Rhombus::new_fat(),
+            PenroseRhombusType::Skinny => Rhombus::new_skinny(),
+            _ => panic!("Invalid type")
+        }
+    }
+
     fn new_fat() -> Self {
         Rhombus {
             small_angle: f32::to_radians(Rhombus::FAT_SMALL_ANGLE),
@@ -316,40 +383,6 @@ impl Default for Rhombus {
     }
 }
 
-fn calc_point_on_angle(scale: f32, angle: f32, leg_len: f32, origin: Vec2) -> Vec2 {
-    let hyp = leg_len * scale;
-    Vec2::new(origin.x + hyp * angle.cos(), origin.y + hyp * angle.sin())
-}
-
-fn get_tooth_points(scale: f32, angle: f32, leg_len: f32, origin: Vec2, offset: f32, inverted: bool) -> PointList {
-    let start_tooth = calc_point_on_angle(scale, angle / 2.0, leg_len, origin);
-    let end_tooth =  calc_point_on_angle(scale + 0.10, angle / 2.0, leg_len, origin);
-    let mut tooth_point = start_tooth + ((end_tooth - start_tooth) / 2.0);
-    tooth_point.y += if inverted { -offset } else { offset };
-
-    vec! [
-        start_tooth,
-        tooth_point,
-        end_tooth
-    ]
-}
-
-fn get_peg_points(scale: f32, angle: f32, leg_len: f32, origin: Vec2, offset: f32, inverted: bool) -> PointList {
-    let start_peg = calc_point_on_angle(scale, angle / 2.0, leg_len, origin);
-    let end_peg =  calc_point_on_angle(scale + 0.10, angle / 2.0, leg_len, origin);
-    let mut peg_point_1 = start_peg.clone();
-    peg_point_1.y += if inverted { -offset } else { offset };
-    let mut peg_point_2 = end_peg.clone();
-    peg_point_2.y += if inverted { -offset } else { offset };
-
-    vec! [
-        start_peg,
-        peg_point_1,
-        peg_point_2,
-        end_peg
-    ]
-}
-
 fn get_edge_point(scale: f32, radius: f32, angle: f32, point: Vec2, neg_y: bool) -> Vec2 {
     let x_coord = point.x * scale;
     let y_coord = (point.x - x_coord).abs() * angle.tan() - radius;
@@ -373,7 +406,7 @@ fn insert_edge_point(rhombus: &Rhombus, side: usize, transform: Transform, entit
     let color = Rhombus::PENROSE_EDGE_DOT_COLORS[rhombus.penrose_type as usize][side];
     let angle = if point.y < 0.0 { -angle } else { angle };
 
-    println!("scale: {}, angle: {}, point: {}, color: {:?}", scale, angle, point, color);
+    //println!("scale: {}, angle: {}, point: {}, color: {:?}", scale, angle, point, color);
 
     entity_commands.insert_bundle(
         GeometryBuilder::build_as(
@@ -393,12 +426,29 @@ fn insert_edge_point(rhombus: &Rhombus, side: usize, transform: Transform, entit
 
 impl Tile for Rhombus {
     type TileType = PenroseRhombusType;
+
+    fn new_random() -> Self {
+        let tile_type = PenroseRhombusType::from_i32(rand::thread_rng().gen_range(0..(PenroseRhombusType::Count as i32))).unwrap();
+        Rhombus::new(tile_type)
+    }
+    
+    fn get_num_sides() -> usize {
+        4
+    }
+
     fn has_free_sides(&self) -> bool {
         return self.used_side_flags & 0xf != 0xf
     }
 
-    fn get_free_sides(&self) -> SideFlags {
-        return !(self.used_side_flags & 0xf);
+    fn get_free_sides(&self) -> Vec<usize> {
+        let mut free_sides= Vec::<usize>::new();
+        for side in 0..Rhombus::get_num_sides() {
+            if !self.get_side_used(side) {
+                free_sides.push(side);
+            }
+        }
+
+        free_sides
     }
 
     fn get_side_used(&self, side: usize) -> bool {
@@ -467,12 +517,12 @@ impl Tile for Rhombus {
     }
 
     fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform {
-        println!("{} {} {}", self.penrose_type as usize, other_type as usize, side);
+        //println!("{} {} {}", self.penrose_type as usize, other_type as usize, side);
         ROTATION_TRANSFORMS[self.penrose_type as usize][other_type as usize][side]
     }
 }
 
-fn connect_tiles<T: Tile>(tile_existing: &mut T, tile_existing_side: usize, tile_to_connect: &mut T) {
+/*fn connect_tiles<T: Tile>(tile_existing: &mut T, tile_existing_side: usize, tile_to_connect: &mut T) {
     assert!(!tile_existing.get_side_used(tile_existing_side));
     
     let side_to_match = tile_existing.get_matching_side(tile_existing_side, tile_to_connect.get_type());
@@ -480,9 +530,7 @@ fn connect_tiles<T: Tile>(tile_existing: &mut T, tile_existing_side: usize, tile
 
     tile_existing.set_side_used(tile_existing_side);
     tile_to_connect.set_side_used(side_to_match);
-}
-
-//fn connect_and_translate
+}*/
 
 fn main() {
     App::build()
@@ -498,12 +546,16 @@ fn setup(mut commands: Commands) {
 
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
-    let r1 = Rhombus::new_skinny();
+    let mut tiler = PenroseTiler::default();
+    tiler.spawn_tile_at_origin(Rhombus::new_fat(), &mut commands);
+
+    commands.insert_resource(tiler);
+
+    /*let r1 = Rhombus::new_skinny();
     let r2 = Rhombus::new_fat();
     let r3 = Rhombus::new_fat();
     let r4 = Rhombus::new_fat();
     let r5 = Rhombus::new_fat();
-
 
     let mut entity = commands.spawn();
     r1.insert_shape_component(Transform::identity(), &mut entity);
@@ -551,20 +603,27 @@ fn setup(mut commands: Commands) {
     r5.insert_shape_component(transform, &mut entity);
     entity.insert(r5.clone());
     r5.spawn_dots_entities(transform, &mut commands);
+    */
 }
 
-fn shapes(mut query: Query<(&Rhombus, &mut Transform)>, mut commands: Commands) {
-    //let mut rng = rand::thread_rng();
-    /*for (rhomb, mut transform) in query.iter_mut() {
-        //if rhomb.color == Color::RED {
-        //    continue;
-        //}
-        let (a, cur_angle) = transform.rotation.to_axis_angle();
-        let mut new_angle = cur_angle + f32::to_radians(1.0);
-        if new_angle.to_degrees() >= 360.0 {
-            new_angle = 0.0;
+fn shapes(mut tiler: ResMut<PenroseTiler>,
+    mut query: Query<(Entity, &EdgeTile, &mut Rhombus, &Transform)>, 
+    mut commands: Commands) {
+
+    if tiler.tiles_added.len() >= 4 {
+        return;
+    }
+
+    for (entity, _, mut rhombus, transform) in query.iter_mut() {
+        if rhombus.has_free_sides() {
+            println!("Spawning tile!");
+            let t = TileWithTransform::new(&mut *rhombus, &transform);
+            tiler.spawn_random_tile_on(t, &mut commands);
         }
-        transform.rotation = Quat::from_rotation_z(new_angle);
-        //println!("translation {}, new_angle: {}, cur_angle {}, about {}", transform.rotation, new_angle.to_degrees(), cur_angle.to_degrees(), a)
-    }*/
+        
+        if !rhombus.has_free_sides() {
+            println!("Removing edge tile!");
+            commands.entity(entity).remove::<EdgeTile>();
+        }
+    }
 }
