@@ -4,8 +4,9 @@ use bevy::math::Vec2;
 use bevy::prelude::Commands;
 use bevy::ecs::system::EntityCommands;
 use bevy::ecs::component::Component;
+use bevy::input::{keyboard::KeyCode, Input};
+use num_traits::FromPrimitive;
 use rand::prelude::*;
-use std::ops::DerefMut;
 
 #[macro_use]
 extern crate lazy_static;
@@ -13,9 +14,6 @@ extern crate lazy_static;
 #[macro_use]
 extern crate enum_primitive_derive;
 extern crate num_traits;
-
-use num_traits::FromPrimitive;
-
 
 lazy_static! {
     static ref ROTATION_TRANSFORMS: Vec<Vec<Vec<Transform>>> = {
@@ -169,32 +167,190 @@ lazy_static! {
 
 type PointList = Vec<Vec2>;
 
-trait Tile : Component {
+trait Tile : Component + Clone {
     type TileType;
     fn new_random() -> Self;
     fn get_num_sides() -> usize;
     fn insert_shape_component(&self, transform: Transform, entity_commands: &mut EntityCommands);
-    fn spawn_dots_entities(&self, transform: Transform, commands: &mut Commands);
+    fn spawn_dots_entities(&self, parent: Entity, commands: &mut Commands);
     fn has_free_sides(&self) -> bool;
-    fn get_free_sides(&self) -> Vec<usize>;
-    fn set_side_used(&mut self, side: usize);
-    fn get_side_used(&self, side: usize) -> bool;
+    fn get_free_sides(&self) -> Vec<u8>;
+    fn set_side_used(&mut self, side: u8);
+    fn set_side_free(&mut self, side: u8);
+    fn get_side_used(&self, side: u8) -> bool;
     fn get_points(&self) -> PointList;
     fn get_type(&self) -> Self::TileType;
-    fn get_matching_side(&self, side: usize, other_type: Self::TileType) -> usize;
-    fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform;
+    fn get_matching_side(&self, side: u8, other_type: Self::TileType) -> u8;
+    fn get_connection_transform(&self, side: u8, other_type: Self::TileType) -> Transform;
+    //fn get_edge_transformed(&self, side: u8, transform: Transform) -> Edge;
 }
 
 struct TileWithTransform<'a, T: Tile>{
-    tile: &'a mut T,
+    tile: &'a T,
     transform: &'a Transform
 }
 
 impl<'a, T: Tile> TileWithTransform<'a, T> {
-    fn new(tile: &'a mut T, transform: &'a Transform) -> Self {
+    fn new(tile: &'a T, transform: &'a Transform) -> Self {
         TileWithTransform {
             tile: tile,
             transform: transform
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Edge {
+    start: Vec2,
+    end: Vec2
+}
+
+impl Edge {
+    fn new(p1: Vec2, p2: Vec2) -> Self {
+        if p1 < p2 {
+            Edge {
+                start: p1,
+                end: p2,
+            }
+        } else {
+            Edge {
+                start: p2,
+                end: p1,
+            }
+        }
+    }
+}
+
+fn get_edges_for_tile<T: Tile>(tile: &TileWithTransform<T>) -> Vec<Edge> {
+    let mut edges = Vec::new();
+    let points = tile.tile.get_points();
+    for i in 0..points.len() {
+        let j = (i + 1) % points.len();
+        let world_point_0 = (*tile.transform * points[i].extend(0.0)).truncate();
+        let world_point_1 = (*tile.transform * points[j].extend(0.0)).truncate();
+        edges.push(Edge::new(world_point_0, world_point_1));
+    }
+
+    edges
+}
+
+#[derive(Clone, Copy)]
+struct EdgeData {
+    entity: Entity,
+    side: u8
+}
+
+#[derive(Default)]
+struct EdgeLookup {
+    edges: Vec<Edge>,
+    tiles: Vec<Vec<EdgeData> >
+}
+
+struct EdgeResult {
+    edge: Edge,
+    data: Vec<EdgeData>
+}
+
+impl EdgeLookup {
+    fn edge_search_fuzzy(&self, edge: &Edge) -> Result<usize, usize> {
+        let epsilon = 0.004;
+        /*self.edges.binary_search_by(|probe| {
+            let close_start = probe.start - edge.start;
+            let close_end = probe.end - edge.end;
+            if close_start.x.abs() <= epsilon && close_start.y.abs() <= epsilon &&
+                close_end.x.abs() <= epsilon && close_end.y.abs() <= epsilon {
+                Ordering::Equal
+            } else {
+                if probe.start < edge.start && probe.end < edge.end {
+                    Ordering::Less
+                } else if probe.start < edge.start && probe.end > edge.end {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+        })*/
+        for i in 0..self.edges.len() {
+            let probe = &self.edges[i];
+            let close_start = probe.start - edge.start;
+            let close_end = probe.end - edge.end;
+            if close_start.x.abs() <= epsilon && close_start.y.abs() <= epsilon &&
+                close_end.x.abs() <= epsilon && close_end.y.abs() <= epsilon {
+                return Ok(i);
+            }
+        }
+
+        Err(self.edges.len())
+    }
+
+    fn get_tiles_for_edge_excluding(&self, edge: &Edge, exclude: Entity) -> Option<EdgeResult> {
+        let result = self.edge_search_fuzzy(edge);
+        match result {
+            Ok(pos) => {
+                let tiles_copy = self.tiles[pos].clone();
+                Some(EdgeResult {
+                    edge: *edge,
+                    data: tiles_copy.into_iter().filter(|x| x.entity != exclude).collect()
+                })
+            },
+            Err(_) => None 
+        }
+    }
+
+    fn get_tiles_for_all_edges<T: Tile>(&self, tile: &TileWithTransform<T>) -> Vec<EdgeResult> {
+        self.get_tiles_for_all_edges_excluding(tile, Entity::new(0))
+    }
+
+    fn get_tiles_for_all_edges_excluding<T: Tile>(&self, tile: &TileWithTransform<T>, exclude: Entity) -> Vec<EdgeResult> {
+        let edges = get_edges_for_tile(tile);
+        let mut edge_data = Vec::new();
+        for i in 0..edges.len() {
+            match self.get_tiles_for_edge_excluding(&edges[i], exclude) {
+                Some(e) => { 
+                    println!("HIT for edge ({:?} {:?}) len {}", edges[i].start, edges[i].end, e.data.len());
+                    if e.data.len() > 0 {
+                        edge_data.push(e);
+                    }
+                },
+                _ => {}
+            }
+        }
+
+        edge_data
+    }
+
+    fn add_edge(&mut self, edge: &Edge, entity: &Entity, side: u8) {
+        let result = self.edge_search_fuzzy(&edge);
+        match result {
+            Ok(pos) => {
+                println!("Adding to EXISTING edge at {} ({:?}, {:?}) {:?} {} new len {}",
+                    pos, edge.start, edge.end, entity, side, self.tiles[pos].len() + 1);
+                self.tiles[pos].push(EdgeData{entity: *entity, side: side})
+            },
+            Err(pos) =>  {
+                println!("Adding to NEW edge at {} ({:?}, {:?}) {:?} {}", pos, edge.start, edge.end, entity, side);
+                self.edges.insert(pos, *edge);
+
+                let mut v = Vec::new();
+                v.push(EdgeData{entity: *entity, side: side});
+                self.tiles.insert(pos, v);
+            }
+        }
+    }
+
+    fn add_edges<T: Tile>(&mut self, tile: &TileWithTransform<T>, entity: &Entity) {
+        let edges = get_edges_for_tile(tile);
+        for i in 0..edges.len() {
+            println!("--> Adding edge {:?} ({:?}, {:?}) {}", entity, edges[i].start, edges[i].end, i);
+            self.add_edge(&edges[i], entity, i as u8);
+        }
+    }
+
+    fn remove_entity(&mut self, entity: Entity) {
+        for d in &mut self.tiles {
+            d.retain(|data| {
+                data.entity != entity
+            });
         }
     }
 }
@@ -203,40 +359,72 @@ impl<'a, T: Tile> TileWithTransform<'a, T> {
 struct PenroseTiler {
     tiles_added: Vec<Entity>
 }
+
 struct EdgeTile;
 
 impl PenroseTiler {
-    fn spawn_tile_at<T: Tile>(&mut self, tile: T, transform: Transform, commands: &mut Commands) {
-        tile.spawn_dots_entities(transform, commands);
+    fn spawn_tile_at<T: Tile>(&mut self, tile: &T, transform: Transform, commands: &mut Commands) -> Entity {
         let mut entity = commands.spawn();
+        let id = entity.id();
         tile.insert_shape_component(transform, &mut entity);
-        entity.insert(tile);
+        entity.insert(tile.clone());
         entity.insert(EdgeTile);
 
-        self.tiles_added.push(entity.id());
-    }
-    fn spawn_tile_at_origin<T: Tile>(&mut self, tile: T, commands: &mut Commands) {
-        self.spawn_tile_at(tile, Transform::identity(), commands);
+        tile.spawn_dots_entities(id, commands);
+        self.tiles_added.push(id);
+
+        id
     }
 
-    fn spawn_tile_on<T: Tile>(&mut self, side: usize, mut tile: T, on_tile: TileWithTransform<T>, commands: &mut Commands) {
-        assert!(!on_tile.tile.get_side_used(side));
+    fn spawn_tile_at_origin<T: Tile>(&mut self, tile: &T, commands: &mut Commands) -> Entity {
+        self.spawn_tile_at(tile, Transform::identity(), commands)
+    }
 
-        let transform = (*on_tile.transform) * on_tile.tile.get_connection_transform(side, tile.get_type());
-        tile.set_side_used(on_tile.tile.get_matching_side(side, tile.get_type()));
-        self.spawn_tile_at(tile, transform, commands);
-        on_tile.tile.set_side_used(side);
+    fn spawn_tile_on<T: Tile>(
+        &mut self, 
+        on_tile_side: u8, 
+        tile: &T, 
+        on_tile: &TileWithTransform<T>, 
+        commands: &mut Commands
+    ) -> (Entity, Transform) {
+        assert!(!on_tile.tile.get_side_used(on_tile_side));
+
+        let tile_side = on_tile.tile.get_matching_side(on_tile_side, tile.get_type());
+        let mut tile = tile.clone();
+
+        tile.set_side_used(tile_side);
+        let transform = (*on_tile.transform) * on_tile.tile.get_connection_transform(on_tile_side, tile.get_type());
+
+
+        let entity = self.spawn_tile_at(&tile, transform, commands);
+
+        println!("Setting side used {} new entity {:?} on tile transform {:?}", tile_side, entity, *on_tile.transform);
+
+
+        (entity, transform)
     }
-    fn spawn_random_tile_at_origin<T: Tile>(&mut self, commands: &mut Commands) {
-        self.spawn_tile_at_origin(T::new_random(), commands);
+
+    fn spawn_random_tile_at_origin<T: Tile>(&mut self, commands: &mut Commands) -> (T, Entity) {
+        let tile = T::new_random();
+        let entity = self.spawn_tile_at_origin(&tile, commands);
+        (tile, entity)
     }
-    fn spawn_random_tile_on<T: Tile>(&mut self, on_tile: TileWithTransform<T>, commands: &mut Commands) {
+
+    fn spawn_random_tile_on<T: Tile>(
+        &mut self, 
+        on_tile: &TileWithTransform<T>, 
+        commands: &mut Commands
+    ) -> (T, Transform, Entity) {
         let free_sides = on_tile.tile.get_free_sides();
         assert!(!free_sides.is_empty());
         let index = rand::thread_rng().gen_range(0..free_sides.len());
         let side = free_sides[index];
         let tile = T::new_random();
-        self.spawn_tile_on(side, tile, on_tile, commands);
+
+        let (entity, transform) = self.spawn_tile_on(side, &tile, on_tile, commands);
+        println!("Spawned {:?} {:?} on side {}", entity, transform, side);
+
+        (tile, transform, entity)
     }
 }
 
@@ -255,7 +443,6 @@ struct Rhombus {
     color: Color,
     used_side_flags: u8,
     penrose_type: PenroseRhombusType
-    //points: PointList
 }
 
 fn make_rotation_transform(angle: f32, translation: Vec2, distance_to_center_from_translation: f32) -> Transform {
@@ -278,10 +465,6 @@ impl Rhombus {
     const SKINNY_SMALL_ANGLE: f32 = 36.0;
     const FAT_LARGE_ANGLE: f32 = 180.0 - Rhombus::FAT_SMALL_ANGLE;
     const SKINNY_LARGE_ANGLE: f32 = 180.0 - Rhombus::SKINNY_SMALL_ANGLE;
-    //const LEFT_POINT: usize = 0;
-    //const TOP_POINT: usize = 1;
-    //const RIGHT_POINT: usize = 2;
-    //const BOTTOM_POINT: usize = 3;
 
     const UPPER_LEFT_SIDE: usize = 0;
     const UPPER_RIGHT_SIDE: usize = 1;
@@ -289,9 +472,6 @@ impl Rhombus {
     const LOWER_LEFT_SIDE: usize = 3;
 
     const PENROSE_POINT_INDICES: [[usize; 4]; 2] = [
-        //[0, 1+3, 2+7, 3+11],
-        //[0, 1+3, 2+6, 3+10]
-
         [0, 1, 2, 3],
         [0, 1, 2, 3]
     ];
@@ -309,7 +489,7 @@ impl Rhombus {
         Rhombus::PENROSE_POINT_INDICES[self.penrose_type as usize][3]
     }
 
-    const PENROSE_MATCHING_RULES: [[[usize; 4]; 2]; 2] = [
+    const PENROSE_MATCHING_RULES: [[[u8; 4]; 2]; 2] = [
         [
             // Fat -> Fat rules
             [3, 2, 1, 0],
@@ -390,7 +570,7 @@ fn get_edge_point(scale: f32, radius: f32, angle: f32, point: Vec2, neg_y: bool)
     Vec2::new(x_coord, y_coord)
 }
 
-fn insert_edge_point(rhombus: &Rhombus, side: usize, transform: Transform, entity_commands: &mut EntityCommands) {
+fn insert_edge_point(rhombus: &Rhombus, side: usize, entity_commands: &mut EntityCommands) {
     let radius = 5.0;
     let scale = Rhombus::PENROSE_POINT_SCALES[rhombus.penrose_type as usize][side];
     let angle = rhombus.small_angle / 2.0;
@@ -406,8 +586,6 @@ fn insert_edge_point(rhombus: &Rhombus, side: usize, transform: Transform, entit
     let color = Rhombus::PENROSE_EDGE_DOT_COLORS[rhombus.penrose_type as usize][side];
     let angle = if point.y < 0.0 { -angle } else { angle };
 
-    //println!("scale: {}, angle: {}, point: {}, color: {:?}", scale, angle, point, color);
-
     entity_commands.insert_bundle(
         GeometryBuilder::build_as(
             &shapes::Circle {
@@ -419,7 +597,7 @@ fn insert_edge_point(rhombus: &Rhombus, side: usize, transform: Transform, entit
                 fill_options: FillOptions::default(),
                 outline_options: StrokeOptions::default().with_line_width(2.0),
             },
-            transform
+            Transform::from_xyz(0.0, 0.0, 1.0)
         )
     );
 }
@@ -440,23 +618,27 @@ impl Tile for Rhombus {
         return self.used_side_flags & 0xf != 0xf
     }
 
-    fn get_free_sides(&self) -> Vec<usize> {
-        let mut free_sides= Vec::<usize>::new();
+    fn get_free_sides(&self) -> Vec<u8> {
+        let mut free_sides = Vec::<u8>::new();
         for side in 0..Rhombus::get_num_sides() {
-            if !self.get_side_used(side) {
-                free_sides.push(side);
+            if !self.get_side_used(side as u8) {
+                free_sides.push(side as u8);
             }
         }
 
         free_sides
     }
 
-    fn get_side_used(&self, side: usize) -> bool {
+    fn get_side_used(&self, side: u8) -> bool {
         return (self.used_side_flags & (1 << side)) != 0;
     }
 
-    fn set_side_used(&mut self, side: usize) {
+    fn set_side_used(&mut self, side: u8) {
         self.used_side_flags |= 1 << side;
+    }
+
+    fn set_side_free(&mut self, side: u8) {
+        self.used_side_flags &= !(1 << side);
     }
 
     fn get_points(&self) -> PointList {
@@ -498,39 +680,34 @@ impl Tile for Rhombus {
         );
     }
 
-    fn spawn_dots_entities(&self, mut transform: Transform, commands: &mut Commands) {
-        transform.translation.z = 1.0;
+    fn spawn_dots_entities(&self, parent: Entity, commands: &mut Commands) {
 
-        insert_edge_point(self, 0, transform, &mut commands.spawn());
-        insert_edge_point(self, 1, transform, &mut commands.spawn());
-        insert_edge_point(self, 2, transform, &mut commands.spawn());
-        insert_edge_point(self, 3, transform, &mut commands.spawn());
+        for i in 0..4 {
+            let mut entity = commands.spawn();
+            let id = entity.id();
+            insert_edge_point(self, i, &mut entity);
+            commands.entity(parent).push_children(&[id]);
+        }
     }
 
     fn get_type(&self) -> Self::TileType {
         self.penrose_type
     }
 
-    fn get_matching_side(&self, side: usize, other_type: Self::TileType) -> usize {
+    fn get_matching_side(&self, side: u8, other_type: Self::TileType) -> u8 {
         assert!(side < 4);
-        Rhombus::PENROSE_MATCHING_RULES[self.get_type() as usize][other_type as usize][side]
+        Rhombus::PENROSE_MATCHING_RULES[self.get_type() as usize][other_type as usize][side as usize]
     }
 
-    fn get_connection_transform(&self, side: usize, other_type: Self::TileType) -> Transform {
-        //println!("{} {} {}", self.penrose_type as usize, other_type as usize, side);
-        ROTATION_TRANSFORMS[self.penrose_type as usize][other_type as usize][side]
+    fn get_connection_transform(&self, side: u8, other_type: Self::TileType) -> Transform {
+        ROTATION_TRANSFORMS[self.penrose_type as usize][other_type as usize][side as usize]
     }
+
+    /*fn get_edge_transformed(&self, side: u8, transform: Transform) -> Edge {
+        let points = self.get_points();
+        
+    }*/
 }
-
-/*fn connect_tiles<T: Tile>(tile_existing: &mut T, tile_existing_side: usize, tile_to_connect: &mut T) {
-    assert!(!tile_existing.get_side_used(tile_existing_side));
-    
-    let side_to_match = tile_existing.get_matching_side(tile_existing_side, tile_to_connect.get_type());
-    assert!(!tile_to_connect.get_side_used(side_to_match));
-
-    tile_existing.set_side_used(tile_existing_side);
-    tile_to_connect.set_side_used(side_to_match);
-}*/
 
 fn main() {
     App::build()
@@ -538,7 +715,9 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
         .add_startup_system(setup.system())
-        .add_system(shapes.system())
+        .add_system(mark_sides_used.system().label("mark_sides_used"))
+        .add_system(place_shapes.system().after("mark_sides_used"))
+
         .run();
 }
 
@@ -547,9 +726,13 @@ fn setup(mut commands: Commands) {
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
 
     let mut tiler = PenroseTiler::default();
-    tiler.spawn_tile_at_origin(Rhombus::new_fat(), &mut commands);
-
+    let (tile, entity) = tiler.spawn_random_tile_at_origin::<Rhombus>(&mut commands);
     commands.insert_resource(tiler);
+
+    let mut edges = EdgeLookup::default();
+    edges.add_edges(&TileWithTransform::new(&tile, &Transform::identity()), &entity);
+    commands.insert_resource(edges);
+
 
     /*let r1 = Rhombus::new_skinny();
     let r2 = Rhombus::new_fat();
@@ -606,24 +789,119 @@ fn setup(mut commands: Commands) {
     */
 }
 
-fn shapes(mut tiler: ResMut<PenroseTiler>,
-    mut query: Query<(Entity, &EdgeTile, &mut Rhombus, &Transform)>, 
-    mut commands: Commands) {
+fn mark_sides_used(
+    edges: Res<EdgeLookup>,
+    mut query: QuerySet<(
+        Query<(Entity, &mut Rhombus, &Transform), Added<Rhombus>>,
+        Query<(Entity, &mut Rhombus, &Transform)>
+    )>,
+    mut commands: Commands
+) {
 
-    if tiler.tiles_added.len() >= 4 {
-        return;
+    let mut has_new_rhombus = false;
+    let mut edges_to_set: Vec<EdgeData> = Vec::new();
+    for (entity, mut rhombus, transform) in query.q0_mut().iter_mut() {
+        if !has_new_rhombus {
+            println!("START MARK SIDES PASS*****************************************************");
+            has_new_rhombus = true;
+        }
+
+        let tile = TileWithTransform::new(&mut *rhombus, &transform);
+        let edge_data = edges.get_tiles_for_all_edges(&tile);
+        
+        for edge in edge_data {
+            let num_data = edge.data.len();
+            for data in edge.data {
+                println!("  considering: {:?} {}", data.entity, data.side);
+                if data.entity == entity {
+                    if num_data < 2 {
+                        println!( "  (Skipping side {} on new entity {:?}, nothing connected to it)", data.side, data.entity);
+                    } else {
+                        edges_to_set.push(data);
+                        println!( "  --> SETTING side {} used on new entity {:?}, because there's something else connected)", data.side, data.entity);
+                    }
+                } else {
+                    println!( "  --> SETTING side {} used on entity {:?}", data.side, data.entity);
+                    edges_to_set.push(data);
+                }
+            }
+        }
+    }
+    
+    for data in edges_to_set {
+        let mut rhombus = query.q1_mut().get_component_mut::<Rhombus>(data.entity).unwrap();
+        rhombus.set_side_used(data.side);
+
+        if !rhombus.has_free_sides() {
+            println!("  Removing edge tile {:?}!", data.entity);
+            commands.entity(data.entity).remove::<EdgeTile>();
+        }
     }
 
-    for (entity, _, mut rhombus, transform) in query.iter_mut() {
-        if rhombus.has_free_sides() {
-            println!("Spawning tile!");
-            let t = TileWithTransform::new(&mut *rhombus, &transform);
-            tiler.spawn_random_tile_on(t, &mut commands);
+    if has_new_rhombus {
+        println!("END MARK SIDES PASS*****************************************************");
+        println!("");
+    }
+}
+
+fn place_shapes(
+    mut tiler: ResMut<PenroseTiler>,
+    mut edges: ResMut<EdgeLookup>,
+    keyboard_input: Res<Input<KeyCode>>,
+    mut query: QuerySet<(
+        Query<(Entity, &EdgeTile, &mut Rhombus, &Transform)>,
+        Query<(Entity, &mut Rhombus, &Transform)>
+    )>,
+    mut commands: Commands
+) {
+    if keyboard_input.just_pressed(KeyCode::Space) {
+        println!("START*****************************************************");
+        let q0 = query.q0_mut();
+
+        let mut edge_vec: Vec<(Entity, Mut<Rhombus>, &Transform)> = q0.iter_mut().map(
+            |(entity, _, rhombus, transform)| (entity, rhombus, transform)
+        ).collect();
+
+        assert!(edge_vec.len() > 0);
+        let index = rand::thread_rng().gen_range(0..edge_vec.len());
+        let (existing_entity, rhombus, transform) = &mut edge_vec[index];
+        assert!(rhombus.has_free_sides());
+
+        println!("  Spawning tile on exisiting {:?} !", existing_entity);
+        let existing_tile = TileWithTransform::new(&mut **rhombus, transform);
+
+        let (new_tile, new_transform, new_entity) = tiler.spawn_random_tile_on(&existing_tile, &mut commands);
+        let new_tile = TileWithTransform::new(&new_tile, &new_transform);
+        edges.add_edges(&new_tile, &new_entity);
+
+        println!("END*****************************************************");
+        println!("");
+    } else if keyboard_input.just_pressed(KeyCode::U) && tiler.tiles_added.len() > 1 {
+        println!("START*****************************************************");
+        let entity = tiler.tiles_added.pop().unwrap();
+        println!("  Removing {:?}", entity);
+        let q1 = query.q1_mut();
+        let removed_rhombus: &Rhombus = q1.get_component::<Rhombus>(entity).unwrap();
+        let removed_transform: &Transform = q1.get_component::<Transform>(entity).unwrap();
+        let edge_data = edges.get_tiles_for_all_edges_excluding(&TileWithTransform::new(removed_rhombus, removed_transform), entity);
+        for v in edge_data {
+            if v.data.len() == 1 {
+                let data = &v.data[0];
+                let mut rhombus = query.q1_mut().get_component_mut::<Rhombus>(data.entity).unwrap();
+                rhombus.set_side_free(data.side);
+                commands.entity(data.entity).insert(EdgeTile);
+                println!("  SET FREE side {} of entity {:?}, edge ({:?} {:?})", data.side, data.entity, v.edge.start, v.edge.end);
+            } else if v.data.len() > 0 {
+                let data = &v.data[0];
+                println!("  NOT SETTING side {} of entity {:?} free as there are references OTHER than {:?} len {}",
+                data.side, data.entity, entity, v.data.len());
+            } else {
+                println!("  EMPTY EDGE DATA???");
+            }
         }
-        
-        if !rhombus.has_free_sides() {
-            println!("Removing edge tile!");
-            commands.entity(entity).remove::<EdgeTile>();
-        }
+        commands.entity(entity).despawn_recursive();
+        edges.remove_entity(entity);
+        println!("END*****************************************************");
+        println!("");
     }
 }
