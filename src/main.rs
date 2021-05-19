@@ -7,6 +7,7 @@ use bevy::ecs::component::Component;
 use bevy::input::{keyboard::KeyCode, Input};
 use num_traits::FromPrimitive;
 use rand::prelude::*;
+use strum_macros::Display;
 
 #[macro_use]
 extern crate lazy_static;
@@ -227,6 +228,26 @@ impl Edge {
     }
 }
 
+fn get_points_for_tile<P: PenroseEnum, T: Tile<P> >(tile: &TileWithTransform<T>) -> Vec<Vec2> {
+    let origin_points = tile.tile.get_points();
+    let mut transformed_points = Vec::new();
+    for p in origin_points {
+        transformed_points.push((*tile.transform * p.extend(0.0)).truncate());
+    }
+
+    transformed_points
+}
+
+fn get_edge_vectors_for_tile<P: PenroseEnum, T: Tile<P> >(tile: &TileWithTransform<T>) -> Vec<Vec2> {
+    let points = get_points_for_tile(tile);
+    let mut vectors = Vec::new();
+    for i in 0..points.len() {
+        let next_i = i + 1 % points.len();
+        vectors.push(points[next_i] - points[i]);
+    }
+    vectors
+}
+
 fn get_edges_for_tile<P: PenroseEnum, T: Tile<P> >(tile: &TileWithTransform<T>) -> Vec<Edge> {
     let mut edges = Vec::new();
     let points = tile.tile.get_points();
@@ -362,10 +383,20 @@ impl<P: PenroseEnum> EdgeLookup<P> {
     }
 
     fn remove_entity(&mut self, entity: Entity) {
-        for d in &mut self.tiles {
-            d.retain(|data| {
+        assert!(self.tiles.len() == self.edges.len());
+        let mut i = 0;
+        while i < self.tiles.len() {
+            let edges: &mut Vec<EdgeData<P>> = &mut self.tiles[i];
+            edges.retain(|data| {
                 data.entity != entity
             });
+
+            if edges.len() == 0 {
+                self.tiles.remove(i);
+                self.edges.remove(i);
+            } else {
+                i += 1;
+            }
         }
     }
 }
@@ -378,6 +409,49 @@ struct PenroseTiler {
 struct EdgeTile;
 
 impl PenroseTiler {
+    fn is_separating_axis(normal: &Vec2, points_a: &Vec<Vec2>, points_b: &Vec<Vec2>) -> bool {
+        let epsilon = 0.004;
+        let mut min_a = f32::NEG_INFINITY;
+        let mut max_a = f32::INFINITY;
+        let mut min_b = f32::NEG_INFINITY;
+        let mut max_b = f32::INFINITY;
+
+        for v in points_a {
+            let projection = v.dot(*normal);
+            min_a = min_a.min(projection);
+            max_a = max_a.max(projection);
+        }
+
+        for v in points_b {
+            let projection = v.dot(*normal);
+            min_b = min_b.min(projection);
+            max_b = max_b.max(projection);
+        }
+        
+        let diff_1 = max_a - min_b;
+        let diff_2 = max_b - min_a;
+
+        // !(max_a >= min_b && max_b >= min_a)
+        let overlap = diff_1 > epsilon && diff_2 > epsilon;
+        !overlap
+    }
+
+    fn tiles_collide<P: PenroseEnum, T: Tile<P>>(tile_a: &TileWithTransform<T>, tile_b: &TileWithTransform<T>) -> bool {
+        let points_a = get_points_for_tile(tile_a);
+        let points_b = get_points_for_tile(tile_b);
+        
+        let mut vectors = get_edge_vectors_for_tile(tile_a);
+        vectors.extend(get_edge_vectors_for_tile(tile_b));
+
+        for v in &vectors {
+            let normal = v.perp();
+            if PenroseTiler::is_separating_axis(&normal, &points_a, &points_b) {
+                return false;
+            }
+        }
+
+        return true;
+    }
     fn spawn_tile_at<P: PenroseEnum, T: Tile<P>>(&mut self, tile: &T, transform: Transform, commands: &mut Commands) -> Entity {
         let mut entity = commands.spawn();
         let id = entity.id();
@@ -429,7 +503,7 @@ impl PenroseTiler {
         let free_sides = on_tile.tile.get_free_sides();
         let all_types: Vec<P> = P::get_all();
         for side in free_sides {
-            for t in all_types.iter() {
+            for t in &all_types {
                 println!("Pushing {}, {}", side, *t);
                 allowed_tiles.push((side, *t));
             }
@@ -488,12 +562,22 @@ impl PenroseTiler {
         &mut self, 
         on_tile: &TileWithTransform<T>,
         edge_lookup: &EdgeLookup<P>,
+        query: &mut Query<(Entity, &mut Rhombus, &Transform)>,
+        edge_vec: &Vec<(Entity, Mut<T>, &Transform)>,
         commands: &mut Commands
     ) -> Option<(T, Transform, Entity)> {
         let possible_tiles = PenroseTiler::get_allowed_tiles_to_place(on_tile, edge_lookup);
         if possible_tiles.len() == 0 {
             return None;
         }
+
+        /*possible_tiles.retain(|(side, penrose_type)| {
+            let possible = T::new(penrose_type);
+            for t in edge_vec {
+
+            }
+        });*/
+
         let index = rand::thread_rng().gen_range(0..possible_tiles.len());
 
         let (side, penrose_type) = possible_tiles[index];
@@ -506,7 +590,7 @@ impl PenroseTiler {
     }
 }
 
-#[derive(Clone, Copy, Primitive)]
+#[derive(Display, Clone, Copy, Primitive)]
 enum PenroseRhombusType {
     Fat = 0,
     Skinny = 1,
@@ -517,12 +601,6 @@ enum PenroseRhombusType {
 impl Default for PenroseRhombusType {
     fn default() -> Self {
         PenroseRhombusType::Fat
-    }
-}
-
-impl std::fmt::Display for PenroseRhombusType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", *self as usize)
     }
 }
 
@@ -981,7 +1059,9 @@ fn place_shapes(
                     println!("  Success!");
                     break;
                 },
-                None => {}
+                None => {
+                    println!("  Fail! Trying again");
+                }
             }
         }
 
