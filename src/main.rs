@@ -242,7 +242,7 @@ fn get_edge_vectors_for_tile<P: PenroseEnum, T: Tile<P> >(tile: &TileWithTransfo
     let points = get_points_for_tile(tile);
     let mut vectors = Vec::new();
     for i in 0..points.len() {
-        let next_i = i + 1 % points.len();
+        let next_i = (i + 1) % points.len();
         vectors.push(points[next_i] - points[i]);
     }
     vectors
@@ -411,10 +411,10 @@ struct EdgeTile;
 impl PenroseTiler {
     fn is_separating_axis(normal: &Vec2, points_a: &Vec<Vec2>, points_b: &Vec<Vec2>) -> bool {
         let epsilon = 0.004;
-        let mut min_a = f32::NEG_INFINITY;
-        let mut max_a = f32::INFINITY;
-        let mut min_b = f32::NEG_INFINITY;
-        let mut max_b = f32::INFINITY;
+        let mut min_a = f32::INFINITY;
+        let mut max_a = f32::NEG_INFINITY;
+        let mut min_b = f32::INFINITY;
+        let mut max_b = f32::NEG_INFINITY;
 
         for v in points_a {
             let projection = v.dot(*normal);
@@ -431,14 +431,22 @@ impl PenroseTiler {
         let diff_1 = max_a - min_b;
         let diff_2 = max_b - min_a;
 
+
         // !(max_a >= min_b && max_b >= min_a)
         let overlap = diff_1 > epsilon && diff_2 > epsilon;
+
+        /*println!("overlap: {}, diff_1: {}, diff_2: {}, min_a: {}, max_a: {}, min_b: {}, max_b: {}",
+            overlap, diff_1, diff_2, min_a, max_a, min_b, max_b);*/
+
         !overlap
     }
 
     fn tiles_collide<P: PenroseEnum, T: Tile<P>>(tile_a: &TileWithTransform<T>, tile_b: &TileWithTransform<T>) -> bool {
         let points_a = get_points_for_tile(tile_a);
         let points_b = get_points_for_tile(tile_b);
+
+        //println!("points_a: {:?}", points_a);
+        //println!("points_b: {:?}", points_b);
         
         let mut vectors = get_edge_vectors_for_tile(tile_a);
         vectors.extend(get_edge_vectors_for_tile(tile_b));
@@ -504,7 +512,7 @@ impl PenroseTiler {
         let all_types: Vec<P> = P::get_all();
         for side in free_sides {
             for t in &all_types {
-                println!("Pushing {}, {}", side, *t);
+                //println!("Pushing {}, {}", side, *t);
                 allowed_tiles.push((side, *t));
             }
         }
@@ -528,27 +536,27 @@ impl PenroseTiler {
                 match edge_lookup.get_tiles_for_edge(&edge) {
                     Some(result) => {
                         if result.data.len() == 0 {
-                            println!("      ALLOWED No matching tiles for edge, for on_tile_side {} new_side {} new_type {}",
-                                *on_tile_side, new_side, *new_tile_penrose_type);
+                            //println!("      ALLOWED No matching tiles for edge, for on_tile_side {} new_side {} new_type {}",
+                            //    *on_tile_side, new_side, *new_tile_penrose_type);
                         }
                         else if result.data.len() > 1 {
-                            println!("      NOT ALLOWED More than 1 matching tiles for edge, for on_tile_side {}, new_side {} type {}",
-                                *on_tile_side, new_side, *new_tile_penrose_type);
+                            //println!("      NOT ALLOWED More than 1 matching tiles for edge, for on_tile_side {}, new_side {} type {}",
+                            //    *on_tile_side, new_side, *new_tile_penrose_type);
                             return false;
                         } else {
                             if result.data[0].side == T::get_matching_side(*new_tile_penrose_type, new_side, result.data[0].penrose_type) {
-                                println!("      ALLOWED matching side for edge, for on_tile_side {}, new_side {} type {} existing_side {}", 
-                                    *on_tile_side, new_side, *new_tile_penrose_type, result.data[0].side);
+                                //println!("      ALLOWED matching side for edge, for on_tile_side {}, new_side {} type {} existing_side {}", 
+                                //    *on_tile_side, new_side, *new_tile_penrose_type, result.data[0].side);
                             } else {
-                                println!("      NOT ALLOWED matching side for edge, for on_tile_side {}, new_side {} type {} existing_side {}",
-                                    *on_tile_side, new_side, *new_tile_penrose_type, result.data[0].side);
+                                //println!("      NOT ALLOWED matching side for edge, for on_tile_side {}, new_side {} type {} existing_side {}",
+                                //    *on_tile_side, new_side, *new_tile_penrose_type, result.data[0].side);
                                 return false;
                             }
                         }
                     },
                     None => {
-                        println!("      ALLOWED NONE matching tiles for edge, for on_tile_side {} new_side {} new_type {}",
-                            *on_tile_side, new_side, *new_tile_penrose_type)
+                        //println!("      ALLOWED NONE matching tiles for edge, for on_tile_side {} new_side {} new_type {}",
+                        //    *on_tile_side, new_side, *new_tile_penrose_type)
                     }
                 }
             }
@@ -562,21 +570,32 @@ impl PenroseTiler {
         &mut self, 
         on_tile: &TileWithTransform<T>,
         edge_lookup: &EdgeLookup<P>,
-        query: &mut Query<(Entity, &mut Rhombus, &Transform)>,
         edge_vec: &Vec<(Entity, Mut<T>, &Transform)>,
         commands: &mut Commands
     ) -> Option<(T, Transform, Entity)> {
-        let possible_tiles = PenroseTiler::get_allowed_tiles_to_place(on_tile, edge_lookup);
+        let mut possible_tiles = PenroseTiler::get_allowed_tiles_to_place(on_tile, edge_lookup);
         if possible_tiles.len() == 0 {
             return None;
         }
 
-        /*possible_tiles.retain(|(side, penrose_type)| {
-            let possible = T::new(penrose_type);
-            for t in edge_vec {
-
+        possible_tiles.retain(|(side, penrose_type)| {
+            let possible = T::new(*penrose_type);
+            let transform = (*on_tile.transform) * on_tile.tile.get_connection_transform(*side, *penrose_type);
+            let new_tile = TileWithTransform::new(&possible, &transform);
+            for (_, existing_t, existing_trans) in edge_vec {
+                let existing_tile = TileWithTransform::new(& **existing_t, existing_trans);
+                if PenroseTiler::tiles_collide(&new_tile, &existing_tile) {
+                    //println!("Tiles collide, returning false.");
+                    return false;
+                }
             }
-        });*/
+
+            true
+        });
+
+        if possible_tiles.len() == 0 {
+            return None;
+        }
 
         let index = rand::thread_rng().gen_range(0..possible_tiles.len());
 
@@ -897,7 +916,6 @@ fn main() {
         .add_startup_system(setup.system())
         .add_system(mark_sides_used.system().label("mark_sides_used"))
         .add_system(place_shapes.system().after("mark_sides_used"))
-
         .run();
 }
 
@@ -1043,16 +1061,19 @@ fn place_shapes(
             |(entity, _, rhombus, transform)| (entity, rhombus, transform)
         ).collect();
 
+        edge_vec.shuffle(&mut rand::thread_rng());
+
         assert!(edge_vec.len() > 0);
-        loop {
-            let index = rand::thread_rng().gen_range(0..edge_vec.len());
-            let (existing_entity, rhombus, transform) = &mut edge_vec[index];
-            assert!(rhombus.has_free_sides());
-
+        for (existing_entity, rhombus, transform) in edge_vec.iter() {
             println!("  Attempting to spawn tile on exisiting {:?} !", existing_entity);
-            let existing_tile = TileWithTransform::new(&mut **rhombus, transform);
+            if !rhombus.has_free_sides() {
+                // This can happen if this tile is marked to be removed but we're in the same tick that it happened
+                continue;
+            }
 
-            match tiler.spawn_random_tile_on(&existing_tile, &edges, &mut commands) {
+            let existing_tile = TileWithTransform::new(& **rhombus, transform);
+
+            match tiler.spawn_random_tile_on(&existing_tile, &edges, &edge_vec, &mut commands) {
                 Some((new_tile, new_transform, new_entity)) => {
                     let new_tile = TileWithTransform::new(&new_tile, &new_transform);
                     edges.add_edges(&new_tile, &new_entity);
