@@ -186,6 +186,7 @@ trait Tile<P: PenroseEnum> : Component + Clone {
     fn set_side_used(&mut self, side: u8);
     fn set_side_free(&mut self, side: u8);
     fn get_side_used(&self, side: u8) -> bool;
+    //fn set_invalid_placement(&mut self, side: u8, penrose_type: P);
     fn get_points(&self) -> PointList;
     fn get_type(&self) -> P;
     fn get_connection_transform(&self, side: u8, other_type: P) -> Transform;
@@ -207,6 +208,18 @@ impl<'a, T> TileWithTransform<'a, T> {
 
 #[derive(Clone, Copy)]
 struct TilerHandle(usize);
+
+impl Default for TilerHandle {
+    fn default() -> Self {
+        TilerHandle(usize::MAX)
+    }
+}
+
+impl TilerHandle {
+    fn is_valid(&self) -> bool {
+        self.0 != usize::MAX
+    }
+}
 
 struct PlacedTile<'a, T> {
     tile: &'a T,
@@ -424,7 +437,8 @@ struct AddedTile<P> {
 
 #[derive(Default)]
 struct PenroseTiler<P: PenroseEnum> {
-    tiles_added: Vec<AddedTile<P>>
+    tiles_added: Vec<AddedTile<P>>,
+    needs_check: bool //hack
 }
 
 struct EdgeTile;
@@ -545,7 +559,9 @@ impl<P: PenroseEnum> PenroseTiler<P> {
         (tile, entity)
     }
 
-    fn get_allowed_tiles_to_place<T: Tile<P>>(on_tile: &PlacedTile<T>, edge_lookup: &EdgeLookup<P>) -> Vec<(u8, P)> {
+    fn get_allowed_tiles_to_place<T: Tile<P>>(on_tile: &PlacedTile<T>, 
+        edge_lookup: &EdgeLookup<P>, 
+        edge_vec: &Vec<(Entity, Mut<T>, &TilerHandle, &Transform)>,) -> Vec<(u8, P)> {
         let mut allowed_tiles = Vec::new();
         let free_sides = on_tile.tile.get_free_sides();
         let all_types: Vec<P> = P::get_all();
@@ -557,9 +573,19 @@ impl<P: PenroseEnum> PenroseTiler<P> {
         }
 
         allowed_tiles.retain(|(on_tile_side, new_tile_penrose_type)| {
-            let points = T::new(*new_tile_penrose_type).get_points();
+            let possible = T::new(*new_tile_penrose_type);
+            let points = possible.get_points();
             let transform = (*on_tile.transform) * on_tile.tile.get_connection_transform(*on_tile_side, *new_tile_penrose_type);
             let matching_side = T::get_matching_side(on_tile.tile.get_type(), *on_tile_side, *new_tile_penrose_type);
+
+            let new_tile = TileWithTransform::new(&possible, &transform);
+            for (_, existing_t, _, existing_trans) in edge_vec {
+                let existing_tile = TileWithTransform::new(& **existing_t, existing_trans);
+                if PenroseTiler::tiles_collide(&new_tile, &existing_tile) {
+                    //println!("Tiles collide, returning false.");
+                    return false;
+                }
+            }
 
             for new_side in 0..points.len() {
                 let new_side = new_side as u8;
@@ -613,26 +639,7 @@ impl<P: PenroseEnum> PenroseTiler<P> {
         edge_vec: &Vec<(Entity, Mut<T>, &TilerHandle, &Transform)>,
         commands: &mut Commands
     ) -> Option<(T, Transform, Entity)> {
-        let mut possible_tiles = PenroseTiler::get_allowed_tiles_to_place(on_tile, edge_lookup);
-        if possible_tiles.len() == 0 {
-            return None;
-        }
-
-        possible_tiles.retain(|(side, penrose_type)| {
-            let possible = T::new(*penrose_type);
-            let transform = (*on_tile.transform) * on_tile.tile.get_connection_transform(*side, *penrose_type);
-            let new_tile = TileWithTransform::new(&possible, &transform);
-            for (_, existing_t, _, existing_trans) in edge_vec {
-                let existing_tile = TileWithTransform::new(& **existing_t, existing_trans);
-                if PenroseTiler::tiles_collide(&new_tile, &existing_tile) {
-                    //println!("Tiles collide, returning false.");
-                    return false;
-                }
-            }
-
-            true
-        });
-
+        let possible_tiles = PenroseTiler::get_allowed_tiles_to_place(on_tile, edge_lookup, edge_vec);
         if possible_tiles.len() == 0 {
             return None;
         }
@@ -649,7 +656,7 @@ impl<P: PenroseEnum> PenroseTiler<P> {
     }
 }
 
-#[derive(Display, Clone, Copy, Primitive)]
+#[derive(Display, Clone, Copy, Primitive, PartialEq)]
 enum PenroseRhombusType {
     Fat = 0,
     Skinny = 1,
@@ -679,7 +686,8 @@ struct Rhombus {
     leg_len: f32,
     color: Color,
     used_side_flags: u8,
-    penrose_type: PenroseRhombusType
+    penrose_type: PenroseRhombusType,
+    invalid_placements: Vec<(u8, PenroseRhombusType)>
 }
 
 fn make_rotation_transform(angle: f32, translation: Vec2, distance_to_center_from_translation: f32) -> Transform {
@@ -779,7 +787,8 @@ impl Rhombus {
             leg_len: 100.0,
             color: Color::BLUE,
             used_side_flags: 0,
-            penrose_type: PenroseRhombusType::Fat
+            penrose_type: PenroseRhombusType::Fat,
+            invalid_placements: Vec::new()
         }
     }
 
@@ -789,7 +798,8 @@ impl Rhombus {
             leg_len: 100.0,
             color: Color::RED,
             used_side_flags: 0,
-            penrose_type: PenroseRhombusType::Skinny
+            penrose_type: PenroseRhombusType::Skinny,
+            invalid_placements: Vec::new()
         }
     }
 }
@@ -872,6 +882,17 @@ impl Tile<PenroseRhombusType> for Rhombus {
         return (self.used_side_flags & (1 << side)) != 0;
     }
 
+    /*fn set_invalid_placement(&mut self, side: u8, penrose_type: PenroseRhombusType) {
+        if self.invalid_placements.iter().find(|(s, t)| *s == side && *t == penrose_type).is_none() {
+            self.invalid_placements.push((side, penrose_type));
+        }
+
+        let all_invalid_for_side = self.invalid_placements.iter().filter(|(s, _)| *s == side).collect::<Vec<&(u8, PenroseRhombusType)>>();
+        if all_invalid_for_side.len() == PenroseRhombusType::Count as usize {
+            self.set_side_used(side);
+        }
+    }*/
+
     fn set_side_used(&mut self, side: u8) {
         self.used_side_flags |= 1 << side;
     }
@@ -951,7 +972,8 @@ fn main() {
         .add_startup_system(setup.system())
         .add_system(camera_control.system())
         .add_system(mark_sides_used.system().label("mark_sides_used"))
-        .add_system(place_shapes.system().after("mark_sides_used"))
+        .add_system(check_for_invalid_tile.system().label("check_for_invalid_tile").after("mark_sides_used"))
+        .add_system(place_shapes.system().after("check_for_invalid_tile"))
         .run();
 }
 
@@ -989,6 +1011,69 @@ fn camera_control(
     ) {
         transform.scale -= Vec3::new(0.1, 0.1, 0.1);
     }
+}
+
+fn check_for_invalid_tile(
+    mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
+    edges: ResMut<EdgeLookup<PenroseRhombusType>>,
+    mut query: QuerySet<(
+        Query<(Entity, &EdgeTile, &mut Rhombus, &TilerHandle, &Transform)>,
+        Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>
+    )>,
+    commands: Commands
+) {
+    if !tiler.needs_check {
+        return;
+    }
+
+    println!("START INVALID TILE REMOVAL *****************************************************");
+    tiler.needs_check = false;
+
+    let edge_vec: Vec<(Entity, Mut<Rhombus>, &TilerHandle, &Transform)> = query.q0_mut().iter_mut().map(
+        |(entity, _, rhombus, handle, transform)| (entity, rhombus, handle, transform)
+    ).collect();
+
+    let mut found_handle = TilerHandle::default();
+    for (entity, rhombus, handle, transform) in edge_vec.iter() {
+        let tile = PlacedTile {
+            tile: & **rhombus,
+            transform: transform,
+            handle: **handle
+        };
+        let allowed_placements = PenroseTiler::get_allowed_tiles_to_place(&tile, &edges, &edge_vec);
+        println!("    allowed_placements len: {}", allowed_placements.len());
+        let mut sides_not_found: u8 = 0xf;
+        for (s, _) in allowed_placements {
+            sides_not_found &= !(1 << s);
+        }
+        println!("    sides_not_found: {}", sides_not_found);
+
+        let mut side = 0;
+        while sides_not_found != 0 {
+            if sides_not_found & 1 != 0 && 
+                !rhombus.get_side_used(side) {
+                // This side isn't used by another tile, but is invalid to place a tile on
+                println!("    side {} of entity {:?} not used, found_handle {}", side, entity, handle.0);
+                found_handle = **handle;
+                break;
+            }
+            side += 1;
+            sides_not_found >>= 1;
+        }
+
+        if found_handle.is_valid() {
+            break;
+        }
+    }
+
+    if found_handle.is_valid() {
+        let entity = tiler.tiles_added.last().unwrap().entity;
+        //let penrose_type = tiler.tiles_added.last().unwrap().penrose_type;
+        println!("  Removing {:?}", entity);
+        remove_rhombus(entity, query.q1_mut(), tiler, edges, commands);
+        //tiler.tiles_added[found_handle.0].set_invalid_placement()
+    }
+    println!("END INVALID TILE REMOVAL*****************************************************");
 }
 
 fn mark_sides_used(
@@ -1046,6 +1131,37 @@ fn mark_sides_used(
     }
 }
 
+fn remove_rhombus(    
+    entity: Entity,
+    mut query: &mut Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>,
+    mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
+    mut edges: ResMut<EdgeLookup<PenroseRhombusType>>,
+    mut commands: Commands
+) {
+    let entity = tiler.tiles_added.pop().unwrap().entity;
+    println!("  Removing {:?}", entity);
+    let removed_rhombus: &Rhombus = query.get_component::<Rhombus>(entity).unwrap();
+    let removed_transform: &Transform = query.get_component::<Transform>(entity).unwrap();
+    let edge_data = edges.get_tiles_for_all_edges_excluding(&TileWithTransform::new(removed_rhombus, removed_transform), entity);
+    for v in edge_data {
+        if v.data.len() == 1 {
+            let data = &v.data[0];
+            let mut rhombus = query.get_component_mut::<Rhombus>(data.entity).unwrap();
+            rhombus.set_side_free(data.side);
+            commands.entity(data.entity).insert(EdgeTile);
+            println!("  SET FREE side {} of entity {:?}, edge ({:?} {:?})", data.side, data.entity, v.edge.start, v.edge.end);
+        } else if v.data.len() > 0 {
+            let data = &v.data[0];
+            println!("  NOT SETTING side {} of entity {:?} free as there are references OTHER than {:?} len {}",
+            data.side, data.entity, entity, v.data.len());
+        } else {
+            println!("  EMPTY EDGE DATA???");
+        }
+    }
+    commands.entity(entity).despawn_recursive();
+    edges.remove_entity(entity);
+}
+
 fn place_shapes(
     mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
     mut edges: ResMut<EdgeLookup<PenroseRhombusType>>,
@@ -1090,6 +1206,7 @@ fn place_shapes(
                 Some((new_tile, new_transform, new_entity)) => {
                     let new_tile = TileWithTransform::new(&new_tile, &new_transform);
                     edges.add_edges(&new_tile, &new_entity);
+                    tiler.needs_check = true;
                     println!("  Success!");
                     break;
                 },
@@ -1105,27 +1222,7 @@ fn place_shapes(
         println!("START*****************************************************");
         let entity = tiler.tiles_added.pop().unwrap().entity;
         println!("  Removing {:?}", entity);
-        let q1 = query.q1_mut();
-        let removed_rhombus: &Rhombus = q1.get_component::<Rhombus>(entity).unwrap();
-        let removed_transform: &Transform = q1.get_component::<Transform>(entity).unwrap();
-        let edge_data = edges.get_tiles_for_all_edges_excluding(&TileWithTransform::new(removed_rhombus, removed_transform), entity);
-        for v in edge_data {
-            if v.data.len() == 1 {
-                let data = &v.data[0];
-                let mut rhombus = query.q1_mut().get_component_mut::<Rhombus>(data.entity).unwrap();
-                rhombus.set_side_free(data.side);
-                commands.entity(data.entity).insert(EdgeTile);
-                println!("  SET FREE side {} of entity {:?}, edge ({:?} {:?})", data.side, data.entity, v.edge.start, v.edge.end);
-            } else if v.data.len() > 0 {
-                let data = &v.data[0];
-                println!("  NOT SETTING side {} of entity {:?} free as there are references OTHER than {:?} len {}",
-                data.side, data.entity, entity, v.data.len());
-            } else {
-                println!("  EMPTY EDGE DATA???");
-            }
-        }
-        commands.entity(entity).despawn_recursive();
-        edges.remove_entity(entity);
+        remove_rhombus(entity, query.q1_mut(), tiler, edges, commands);
         println!("END*****************************************************");
         println!("");
     }
