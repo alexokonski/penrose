@@ -428,7 +428,7 @@ impl<P: PenroseEnum> EdgeLookup<P> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 struct TilePlacementInfo<P>
 {
     on_handle: TilerHandle,
@@ -436,7 +436,7 @@ struct TilePlacementInfo<P>
     on_side: u8,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 struct AddedTile<P> {
     on: Option<TilePlacementInfo<P>>,
     penrose_type: P
@@ -506,14 +506,6 @@ impl<P: PenroseEnum> PenroseTiler<P> {
     
     fn is_replaying(&self) -> bool {
         self.history.len() > self.tiles_added.len()
-    }
-
-    fn pop_tile(&mut self) {
-        if self.tiles_added.len() == 0 {
-            return;
-        }
-
-        self.remove(TilerHandle(self.tiles_added.len() - 1));
     }
 
     fn remove(&mut self, handle: TilerHandle) {
@@ -598,6 +590,51 @@ impl<P: PenroseEnum> PenroseTiler<P> {
         let tile = T::new_random();
         let entity = self.spawn_tile_at_origin(&tile, commands, asset_server);
         (tile, entity)
+    }
+
+    fn spawn_next_tile_from_history<T: Tile<P>>(&mut self,
+        commands: &mut Commands,
+        asset_server: &Res<AssetServer>,
+        query: &mut Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>
+    ) -> Option<(T, Entity)> {
+        if self.is_replaying() {
+            let next = self.history[self.tiles_added.len()];
+            match next.on {
+                Some(t) => {
+                    let entity = self.tiles_added[t.on_handle.0];
+                    let on_tile = query.get_component::<T>(entity).unwrap();
+                    let on_tile_transform = query.get_component::<Transform>(entity).unwrap();
+                    let on_tile_placed = PlacedTile {
+                        tile: on_tile,
+                        transform: &on_tile_transform,
+                        handle: t.on_handle
+                    };
+                    /*
+                    #[derive(Serialize, Deserialize)]
+struct TilePlacementInfo<P>
+{
+    on_handle: TilerHandle,
+    on_type: P,
+    on_side: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AddedTile<P> {
+    on: Option<TilePlacementInfo<P>>,
+    penrose_type: P
+}
+*/
+                    let new_tile = T::new(next.penrose_type);
+                    let (new_entity, _) = self.spawn_tile_on(t.on_side, &new_tile, &on_tile_placed, commands, asset_server);
+                    Some((new_tile, new_entity))
+                },
+                None => {
+                    Some(self.spawn_random_tile_at_origin(commands, asset_server))
+                }
+            }          
+        } else {
+            None
+        }
     }
 
     fn get_allowed_tiles_to_place<T: Tile<P>>(on_tile: &PlacedTile<T>, 
@@ -1027,17 +1064,105 @@ impl Tile<PenroseRhombusType> for Rhombus {
     }
 }
 
+fn remove_rhombus(    
+    handle: TilerHandle,
+    query: &mut Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>,
+    mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
+    mut edges: ResMut<EdgeLookup<PenroseRhombusType>>,
+    mut commands: Commands
+) {
+    assert!(handle.is_valid());
+    let entity = tiler.tiles_added[handle.0];
+    println!("  Removing {:?}", entity);
+    let removed_rhombus: &Rhombus = query.get_component::<Rhombus>(entity).unwrap();
+    let removed_transform: &Transform = query.get_component::<Transform>(entity).unwrap();
+    let edge_data = edges.get_tiles_for_all_edges_excluding(&TileWithTransform::new(removed_rhombus, removed_transform), entity);
+    for v in edge_data {
+        if v.data.len() == 1 {
+            let data = &v.data[0];
+            let mut rhombus = query.get_component_mut::<Rhombus>(data.entity).unwrap();
+            rhombus.set_side_free(data.side);
+            commands.entity(data.entity).insert(EdgeTile);
+            println!("  SET FREE side {} of entity {:?}, edge ({:?} {:?})", data.side, data.entity, v.edge.start, v.edge.end);
+        } else if v.data.len() > 0 {
+            let data = &v.data[0];
+            println!("  NOT SETTING side {} of entity {:?} free as there are references OTHER than {:?} len {}",
+            data.side, data.entity, entity, v.data.len());
+        } else {
+            println!("  EMPTY EDGE DATA???");
+        }
+    }
+    commands.entity(entity).despawn_recursive();
+    edges.remove_entity(entity);
+    tiler.remove(handle);
+}
+
+fn spawn_random_valid_tile(
+    mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
+    mut edges: ResMut<EdgeLookup<PenroseRhombusType>>,
+    asset_server: Res<AssetServer>,
+    mut query: QuerySet<(
+        Query<(Entity, &EdgeTile, &mut Rhombus, &TilerHandle, &Transform)>,
+        Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>
+    )>,
+    mut commands: Commands
+) {
+    if tiler.tiles_added.len() == 0 {
+        let (new_tile, new_entity) = tiler.spawn_random_tile_at_origin::<Rhombus>(&mut commands, &asset_server);
+        edges.add_edges(&TileWithTransform::new(&new_tile, &Transform::default()), &new_entity);
+        return;
+    }
+
+    let q0 = query.q0_mut();
+
+    let mut edge_vec: Vec<(Entity, Mut<Rhombus>, &TilerHandle, &Transform)> = q0.iter_mut().map(
+        |(entity, _, rhombus, handle, transform)| (entity, rhombus, handle, transform)
+    ).collect();
+
+    edge_vec.shuffle(&mut rand::thread_rng());
+
+    assert!(edge_vec.len() > 0);
+    for (existing_entity, rhombus, handle, transform) in edge_vec.iter() {
+        println!("  Attempting to spawn tile on exisiting {:?} !", existing_entity);
+        if !rhombus.has_free_sides() {
+            // This can happen if this tile is marked to be removed but we're in the same tick that it happened
+            continue;
+        }
+
+        let existing_tile = PlacedTile {
+            tile: & **rhombus,
+            transform: transform,
+            handle: **handle
+        };
+
+        match tiler.spawn_random_tile_on(&existing_tile, &edges, &edge_vec, &mut commands, &asset_server) {
+            Some((new_tile, new_transform, new_entity)) => {
+                let new_tile = TileWithTransform::new(&new_tile, &new_transform);
+                edges.add_edges(&new_tile, &new_entity);
+                tiler.needs_check = true;
+                println!("  Success!");
+                break;
+            },
+            None => {
+                println!("  Fail! Trying again");
+            }
+        }
+    }
+}
+
 fn main() {
+
+
     App::build()
         .insert_resource(Msaa { samples: 8 })
         .add_plugins(DefaultPlugins)
         .add_plugin(ShapePlugin)
-        .add_startup_system(setup.system())
+        .add_startup_system(setup.system().label("setup"))
         .add_system(camera_control.system())
         .add_system(mark_sides_used.system().label("mark_sides_used"))
         .add_system(check_for_invalid_tile.system().label("check_for_invalid_tile").after("mark_sides_used"))
         .add_system(place_shapes.system().label("place_shapes").after("check_for_invalid_tile"))
-        .add_system(save_history.system().after("place_shapes"))
+        .add_system(history_buffer.system().after("place_shapes"))
         .run();
 }
 
@@ -1055,9 +1180,26 @@ fn setup(mut commands: Commands) {
         ..OrthographicProjection::default()
     };*/
 
+    let mut tiler = PenroseTiler::<PenroseRhombusType>::default();
+    let mut edges = EdgeLookup::<PenroseRhombusType>::default();
+
+    let matches = clap::App::new("penrose")
+                    .about("penrose tiler")
+                    .arg(clap::Arg::with_name("history-path")
+                        .long("history-path")
+                        .required(false)
+                        .multiple(false))
+                    .get_matches();
+
+    
+    if let Some(history_path) = matches.value_of("history-path") {
+        let path = Path::new(history_path);
+        let serialized_buffer = fs::read(&path).unwrap();
+        tiler.history = bincode::deserialize(&serialized_buffer).unwrap();
+    }
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
-    commands.insert_resource(PenroseTiler::<PenroseRhombusType>::default());
-    commands.insert_resource(EdgeLookup::<PenroseRhombusType>::default());
+    commands.insert_resource(tiler);
+    commands.insert_resource(edges);
 }
 
 fn camera_control(
@@ -1196,38 +1338,6 @@ fn mark_sides_used(
     }
 }
 
-fn remove_rhombus(    
-    handle: TilerHandle,
-    query: &mut Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>,
-    mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
-    mut edges: ResMut<EdgeLookup<PenroseRhombusType>>,
-    mut commands: Commands
-) {
-    assert!(handle.is_valid());
-    let entity = tiler.tiles_added[handle.0];
-    println!("  Removing {:?}", entity);
-    let removed_rhombus: &Rhombus = query.get_component::<Rhombus>(entity).unwrap();
-    let removed_transform: &Transform = query.get_component::<Transform>(entity).unwrap();
-    let edge_data = edges.get_tiles_for_all_edges_excluding(&TileWithTransform::new(removed_rhombus, removed_transform), entity);
-    for v in edge_data {
-        if v.data.len() == 1 {
-            let data = &v.data[0];
-            let mut rhombus = query.get_component_mut::<Rhombus>(data.entity).unwrap();
-            rhombus.set_side_free(data.side);
-            commands.entity(data.entity).insert(EdgeTile);
-            println!("  SET FREE side {} of entity {:?}, edge ({:?} {:?})", data.side, data.entity, v.edge.start, v.edge.end);
-        } else if v.data.len() > 0 {
-            let data = &v.data[0];
-            println!("  NOT SETTING side {} of entity {:?} free as there are references OTHER than {:?} len {}",
-            data.side, data.entity, entity, v.data.len());
-        } else {
-            println!("  EMPTY EDGE DATA???");
-        }
-    }
-    commands.entity(entity).despawn_recursive();
-    edges.remove_entity(entity);
-    tiler.remove(handle);
-}
 
 fn place_shapes(
     mut tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
@@ -1241,49 +1351,9 @@ fn place_shapes(
     mut commands: Commands
 ) {
     if keyboard_input.just_pressed(KeyCode::Space) {
-        if tiler.tiles_added.len() == 0 {
-            let (new_tile, new_entity) = tiler.spawn_random_tile_at_origin::<Rhombus>(&mut commands, &asset_server);
-            edges.add_edges(&TileWithTransform::new(&new_tile, &Transform::default()), &new_entity);
-            return;
-        }
-
         println!("START*****************************************************");
-        let q0 = query.q0_mut();
-
-        let mut edge_vec: Vec<(Entity, Mut<Rhombus>, &TilerHandle, &Transform)> = q0.iter_mut().map(
-            |(entity, _, rhombus, handle, transform)| (entity, rhombus, handle, transform)
-        ).collect();
-
-        edge_vec.shuffle(&mut rand::thread_rng());
-
-        assert!(edge_vec.len() > 0);
-        for (existing_entity, rhombus, handle, transform) in edge_vec.iter() {
-            println!("  Attempting to spawn tile on exisiting {:?} !", existing_entity);
-            if !rhombus.has_free_sides() {
-                // This can happen if this tile is marked to be removed but we're in the same tick that it happened
-                continue;
-            }
-
-            let existing_tile = PlacedTile {
-                tile: & **rhombus,
-                transform: transform,
-                handle: **handle
-            };
-
-            match tiler.spawn_random_tile_on(&existing_tile, &edges, &edge_vec, &mut commands, &asset_server) {
-                Some((new_tile, new_transform, new_entity)) => {
-                    let new_tile = TileWithTransform::new(&new_tile, &new_transform);
-                    edges.add_edges(&new_tile, &new_entity);
-                    tiler.needs_check = true;
-                    println!("  Success!");
-                    break;
-                },
-                None => {
-                    println!("  Fail! Trying again");
-                }
-            }
-        }
-
+        if tiler.is_replaying() {}
+        spawn_random_valid_tile(tiler, edges, asset_server, query, commands);
         println!("END*****************************************************");
         println!("");
     } else if keyboard_input.just_pressed(KeyCode::U) && tiler.tiles_added.len() > 0 {
@@ -1295,7 +1365,7 @@ fn place_shapes(
     }
 }
 
-fn save_history(
+fn history_buffer(
     tiler: ResMut<PenroseTiler<PenroseRhombusType>>,
     keyboard_input: Res<Input<KeyCode>>
 ) {
