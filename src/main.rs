@@ -446,7 +446,8 @@ struct AddedTile<P> {
 struct PenroseTiler<P: PenroseEnum> {
     history: Vec<AddedTile<P>>,
     tiles_added: Vec<Entity>,
-    needs_check: bool
+    needs_check: bool,
+    is_replay: bool
 }
 
 struct EdgeTile;
@@ -505,7 +506,8 @@ impl<P: PenroseEnum> PenroseTiler<P> {
     }
     
     fn is_replaying(&self) -> bool {
-        self.history.len() > self.tiles_added.len()
+        //self.history.len() > self.tiles_added.len()
+        self.is_replay
     }
 
     fn remove(&mut self, handle: TilerHandle) {
@@ -552,7 +554,7 @@ impl<P: PenroseEnum> PenroseTiler<P> {
 
     fn spawn_tile_on<T: Tile<P>>(
         &mut self, 
-        on_tile_side: u8, 
+        on_tile_side: u8,
         tile: &T, 
         on_tile: &PlacedTile<T>, 
         commands: &mut Commands,
@@ -596,11 +598,14 @@ impl<P: PenroseEnum> PenroseTiler<P> {
         commands: &mut Commands,
         asset_server: &Res<AssetServer>,
         query: &mut Query<(Entity, &mut Rhombus, &TilerHandle, &Transform)>
-    ) -> Option<(T, Entity)> {
-        if self.is_replaying() {
+    ) -> Option<(T, Transform, Entity)>  {
+        if self.is_replaying() && self.history.len() > self.tiles_added.len() {
             let next = self.history[self.tiles_added.len()];
+            println!("      SPAWNING {} FROM HISTORY", self.tiles_added.len());
+
             match next.on {
                 Some(t) => {
+                    println!("      SPAWNING on_handle {}", t.on_handle.0);
                     let entity = self.tiles_added[t.on_handle.0];
                     let on_tile = query.get_component::<T>(entity).unwrap();
                     let on_tile_transform = query.get_component::<Transform>(entity).unwrap();
@@ -609,27 +614,16 @@ impl<P: PenroseEnum> PenroseTiler<P> {
                         transform: &on_tile_transform,
                         handle: t.on_handle
                     };
-                    /*
-                    #[derive(Serialize, Deserialize)]
-struct TilePlacementInfo<P>
-{
-    on_handle: TilerHandle,
-    on_type: P,
-    on_side: u8,
-}
-
-#[derive(Serialize, Deserialize)]
-struct AddedTile<P> {
-    on: Option<TilePlacementInfo<P>>,
-    penrose_type: P
-}
-*/
                     let new_tile = T::new(next.penrose_type);
-                    let (new_entity, _) = self.spawn_tile_on(t.on_side, &new_tile, &on_tile_placed, commands, asset_server);
-                    Some((new_tile, new_entity))
+                    let (new_entity, new_transform) = self.spawn_tile_on(t.on_side, &new_tile, &on_tile_placed, commands, asset_server);
+                    Some((new_tile, new_transform, new_entity))
                 },
                 None => {
-                    Some(self.spawn_random_tile_at_origin(commands, asset_server))
+                    println!("      SPAWNING AT ORIGIN");
+
+                    //Some(self.spawn_random_tile_at_origin(commands, asset_server))
+                    let new_tile = T::new(next.penrose_type);
+                    Some((new_tile.clone(), Transform::default(), self.spawn_tile_at_origin(&new_tile, commands, asset_server)))
                 }
             }          
         } else {
@@ -1151,8 +1145,6 @@ fn spawn_random_valid_tile(
 }
 
 fn main() {
-
-
     App::build()
         .insert_resource(Msaa { samples: 8 })
         .add_plugins(DefaultPlugins)
@@ -1181,14 +1173,16 @@ fn setup(mut commands: Commands) {
     };*/
 
     let mut tiler = PenroseTiler::<PenroseRhombusType>::default();
-    let mut edges = EdgeLookup::<PenroseRhombusType>::default();
+    let edges = EdgeLookup::<PenroseRhombusType>::default();
 
     let matches = clap::App::new("penrose")
                     .about("penrose tiler")
                     .arg(clap::Arg::with_name("history-path")
                         .long("history-path")
                         .required(false)
-                        .multiple(false))
+                        .multiple(false)
+                        .value_name("FILE")
+                        .number_of_values(1))
                     .get_matches();
 
     
@@ -1196,6 +1190,7 @@ fn setup(mut commands: Commands) {
         let path = Path::new(history_path);
         let serialized_buffer = fs::read(&path).unwrap();
         tiler.history = bincode::deserialize(&serialized_buffer).unwrap();
+        tiler.is_replay = true;
     }
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
     commands.insert_resource(tiler);
@@ -1352,8 +1347,21 @@ fn place_shapes(
 ) {
     if keyboard_input.just_pressed(KeyCode::Space) {
         println!("START*****************************************************");
-        if tiler.is_replaying() {}
-        spawn_random_valid_tile(tiler, edges, asset_server, query, commands);
+        if tiler.is_replaying() {
+            println!("  SPAWNING FROM HISTORY*********************************");
+            match tiler.spawn_next_tile_from_history::<Rhombus>(&mut commands, &asset_server, query.q1_mut()) {
+                Some((new_tile, new_transform, new_entity)) => {
+                    let tile = TileWithTransform::new(&new_tile, &new_transform);
+                    edges.add_edges(&tile, &new_entity);
+                    tiler.needs_check = true;
+                },
+                None => {}
+            }
+        } else {
+            println!("  SPAWNING RANDOM**************************************");
+            spawn_random_valid_tile(tiler, edges, asset_server, query, commands);
+        }
+        
         println!("END*****************************************************");
         println!("");
     } else if keyboard_input.just_pressed(KeyCode::U) && tiler.tiles_added.len() > 0 {
