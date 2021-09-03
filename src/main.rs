@@ -212,7 +212,7 @@ impl<'a, T> TileWithTransform<'a, T> {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 struct TilerHandle(usize);
 
 impl Default for TilerHandle {
@@ -428,7 +428,7 @@ impl<P: PenroseEnum> EdgeLookup<P> {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 struct TilePlacementInfo<P>
 {
     on_handle: TilerHandle,
@@ -452,7 +452,7 @@ struct PenroseTiler<P: PenroseEnum> {
 
 struct EdgeTile;
 
-impl<P: PenroseEnum> PenroseTiler<P> {
+impl<P: PenroseEnum + std::fmt::Debug> PenroseTiler<P> {
     fn is_separating_axis(normal: &Vec2, points_a: &Vec<Vec2>, points_b: &Vec<Vec2>) -> bool {
         let epsilon = 0.004;
         let mut min_a = f32::INFINITY;
@@ -533,11 +533,16 @@ impl<P: PenroseEnum> PenroseTiler<P> {
         entity.insert(EdgeTile);
         entity.insert(TilerHandle(self.tiles_added.len()));
 
+        if !self.is_replaying() {
+            println!("SODIFJSODIJF");
+            println!("pushing {:?} onto history at pos {}", on_info, self.history.len());
+            self.history.push(AddedTile {
+                on: on_info,
+                penrose_type: tile.get_type()
+            });
+        }
         tile.spawn_dots_entities(id, commands, asset_server);
-        self.history.push(AddedTile {
-            on: on_info,
-            penrose_type: tile.get_type()
-        });
+
         self.tiles_added.push(id);
 
         id
@@ -731,7 +736,7 @@ impl<P: PenroseEnum> PenroseTiler<P> {
     }
 }
 
-#[derive(Display, Clone, Copy, Primitive, PartialEq, Serialize, Deserialize)]
+#[derive(Display, Clone, Copy, Primitive, PartialEq, Serialize, Deserialize, Debug)]
 enum PenroseRhombusType {
     Fat = 0,
     Skinny = 1,
@@ -755,7 +760,7 @@ impl PenroseEnum for PenroseRhombusType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Rhombus {
     small_angle: f32,
     leg_len: f32,
@@ -1355,7 +1360,9 @@ fn place_shapes(
                     edges.add_edges(&tile, &new_entity);
                     tiler.needs_check = true;
                 },
-                None => {}
+                None => {
+                    println!("  DONE SPAWNING FROM FROM HISTORY*********************************");
+                }
             }
         } else {
             println!("  SPAWNING RANDOM**************************************");
